@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { validator } from "hono-openapi";
+import { describeRoute, resolver, validator } from "hono-openapi";
 import * as v from "valibot";
 import { workspaceAccess } from "../utils/workspace-access-middleware";
 import {
@@ -14,7 +14,79 @@ import {
   updateSavedView,
 } from "./service";
 
-const unknownJson = v.unknown();
+const nonEmptyString = v.pipe(v.string(), v.minLength(1));
+const sortTermSchema = v.strictObject({
+  field: v.picklist([
+    "priority",
+    "dueDate",
+    "updatedAt",
+    "createdAt",
+    "title",
+    "taskId",
+  ]),
+  direction: v.picklist(["asc", "desc"]),
+  nulls: v.optional(v.picklist(["first", "last"])),
+});
+const savedFilterFields = {
+  projectIds: v.optional(v.array(nonEmptyString)),
+  state: v.optional(v.picklist(["active", "final", "any"])),
+  priorities: v.optional(
+    v.array(v.picklist(["urgent", "high", "medium", "low", "no-priority"])),
+  ),
+  assigneeIds: v.optional(v.array(nonEmptyString)),
+  labelIds: v.optional(v.array(nonEmptyString)),
+  due: v.optional(
+    v.picklist([
+      "overdue",
+      "today",
+      "next-7-days",
+      "next-30-days",
+      "no-due-date",
+      "any",
+    ]),
+  ),
+  text: v.optional(v.pipe(v.string(), v.maxLength(200))),
+};
+const savedFilterValuesSchema = v.strictObject(savedFilterFields);
+const savedFiltersSchema = v.union([
+  savedFilterValuesSchema,
+  v.strictObject({
+    schemaVersion: v.optional(v.pipe(v.number(), v.integer())),
+    filters: savedFilterValuesSchema,
+    sort: v.optional(v.array(sortTermSchema)),
+  }),
+  v.strictObject({
+    schemaVersion: v.optional(v.pipe(v.number(), v.integer())),
+    sort: v.optional(v.array(sortTermSchema)),
+    ...savedFilterFields,
+  }),
+]);
+const savedViewInputSchema = v.strictObject({
+  name: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(80))),
+  filters: savedFiltersSchema,
+  sort: v.optional(v.array(sortTermSchema)),
+  pinnedPosition: v.optional(
+    v.nullable(v.pipe(v.number(), v.integer(), v.minValue(0))),
+  ),
+  updatedAt: v.optional(nonEmptyString),
+});
+const describeSavedView = (
+  operationId: string,
+  description: string,
+  status: 200 | 201 = 200,
+) =>
+  describeRoute({
+    operationId,
+    tags: ["Saved Views"],
+    description,
+    responses: {
+      [status]: {
+        description,
+        content: { "application/json": { schema: resolver(v.any()) } },
+      },
+    },
+  });
+
 const listQuery = v.object({
   limit: v.optional(
     v.pipe(
@@ -38,6 +110,7 @@ type RouteVariables = {
 export const savedViewWorkspace = new Hono<{ Variables: RouteVariables }>()
   .get(
     "/:workspaceId/saved-views",
+    describeSavedView("listSavedViews", "List the current user's saved views."),
     validator("param", v.object({ workspaceId: v.string() })),
     validator("query", listQuery),
     workspaceAccess.fromParam(),
@@ -53,8 +126,9 @@ export const savedViewWorkspace = new Hono<{ Variables: RouteVariables }>()
   )
   .post(
     "/:workspaceId/saved-views",
+    describeSavedView("createSavedView", "Create a saved view.", 201),
     validator("param", v.object({ workspaceId: v.string() })),
-    validator("json", unknownJson),
+    validator("json", savedViewInputSchema),
     workspaceAccess.fromParam(),
     async (c) => {
       const view = await createSavedView(
@@ -67,9 +141,13 @@ export const savedViewWorkspace = new Hono<{ Variables: RouteVariables }>()
   )
   .post(
     "/:workspaceId/focus-query",
+    describeSavedView(
+      "runFocusQuery",
+      "Run a focus query and return its task page.",
+    ),
     validator("param", v.object({ workspaceId: v.string() })),
     validator("query", listQuery),
-    validator("json", unknownJson),
+    validator("json", savedViewInputSchema),
     workspaceAccess.fromParam(),
     async (c) => {
       const { limit, cursor } = c.req.valid("query");
@@ -81,8 +159,9 @@ export const savedViewWorkspace = new Hono<{ Variables: RouteVariables }>()
   )
   .post(
     "/:workspaceId/focus-facets",
+    describeSavedView("runFocusFacets", "Compute facets for a focus query."),
     validator("param", v.object({ workspaceId: v.string() })),
-    validator("json", unknownJson),
+    validator("json", savedViewInputSchema),
     workspaceAccess.fromParam(),
     async (c) => {
       const definition = await normalizeFocusInput(c.req.valid("json"));
@@ -93,6 +172,7 @@ export const savedViewWorkspace = new Hono<{ Variables: RouteVariables }>()
 const savedView = new Hono<{ Variables: RouteVariables }>()
   .get(
     "/:viewId",
+    describeSavedView("getSavedView", "Get a saved view."),
     validator("param", v.object({ viewId: v.string() })),
     workspaceAccess.fromSavedView(),
     async (c) => {
@@ -107,8 +187,9 @@ const savedView = new Hono<{ Variables: RouteVariables }>()
   )
   .put(
     "/:viewId",
+    describeSavedView("updateSavedView", "Update a saved view."),
     validator("param", v.object({ viewId: v.string() })),
-    validator("json", unknownJson),
+    validator("json", savedViewInputSchema),
     workspaceAccess.fromSavedView(),
     async (c) => {
       return c.json(
@@ -123,6 +204,7 @@ const savedView = new Hono<{ Variables: RouteVariables }>()
   )
   .delete(
     "/:viewId",
+    describeSavedView("deleteSavedView", "Delete a saved view."),
     validator("param", v.object({ viewId: v.string() })),
     workspaceAccess.fromSavedView(),
     async (c) => {
@@ -137,6 +219,10 @@ const savedView = new Hono<{ Variables: RouteVariables }>()
   )
   .get(
     "/:viewId/tasks",
+    describeSavedView(
+      "runSavedView",
+      "Run a saved view and return its task page.",
+    ),
     validator("param", v.object({ viewId: v.string() })),
     validator("query", listQuery),
     workspaceAccess.fromSavedView(),
