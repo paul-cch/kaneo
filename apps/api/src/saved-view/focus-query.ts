@@ -4,7 +4,6 @@ import {
   countDistinct,
   eq,
   exists,
-  gt,
   gte,
   inArray,
   isNull,
@@ -14,6 +13,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
+import { HTTPException } from "hono/http-exception";
 import db, { schema } from "../database";
 import {
   decodeSavedViewCursor,
@@ -93,6 +93,21 @@ function localDayBounds(now: Date): {
   return { start, end, next7, next30 };
 }
 
+function priorityPredicate(priorities: readonly string[]): SQL | undefined {
+  if (priorities.length === 0) return undefined;
+  const includeNoPriority = priorities.includes("no-priority");
+  const concrete = priorities.filter((priority) => priority !== "no-priority");
+  if (includeNoPriority && concrete.length > 0) {
+    return or(
+      inArray(schema.taskTable.priority, concrete),
+      isNull(schema.taskTable.priority),
+    );
+  }
+  return includeNoPriority
+    ? isNull(schema.taskTable.priority)
+    : inArray(schema.taskTable.priority, concrete);
+}
+
 function buildFocusWhere(
   workspaceId: string,
   definition: SavedViewDefinition,
@@ -154,9 +169,7 @@ function buildFocusWhere(
     filters.assigneeIds.length > 0
       ? inArray(schema.taskTable.userId, filters.assigneeIds)
       : undefined,
-    filters.priorities.length > 0
-      ? inArray(schema.taskTable.priority, filters.priorities)
-      : undefined,
+    priorityPredicate(filters.priorities),
     filters.text
       ? sql`to_tsvector('simple', coalesce(${schema.taskTable.title}, '') || ' ' || coalesce(${schema.taskTable.description}, '')) @@ plainto_tsquery('simple', ${filters.text})`
       : undefined,
@@ -245,13 +258,24 @@ function cursorTermAfter(
   return sql`(${rankAfter} or (${rank} = ${cursorRank} and ${expression} ${sql.raw(operator)} ${cursorSqlValue(term, value)}))`;
 }
 
+function sortKey(definition: SavedViewDefinition): string {
+  return JSON.stringify(definition.sort);
+}
+
 function cursorWhere(
   definition: SavedViewDefinition,
   cursor: SavedViewCursor | null,
 ): SQL | undefined {
   if (!cursor) return undefined;
-  if (cursor.sortValues?.length !== definition.sort.length) {
-    return gt(schema.taskTable.id, cursor.taskId);
+  if (
+    !cursor.sortKey ||
+    cursor.sortKey !== sortKey(definition) ||
+    !cursor.sortValues ||
+    cursor.sortValues.length !== definition.sort.length
+  ) {
+    throw new HTTPException(400, {
+      message: "Saved view cursor no longer matches this sort",
+    });
   }
 
   const branches: SQL[] = [];
@@ -561,6 +585,7 @@ export async function runFocusQuery(
       ? encodeSavedViewCursor({
           taskId: last.id,
           position: (cursor?.position ?? -1) + page.length,
+          sortKey: sortKey(definition),
           sortValues: definition.sort.map((term) =>
             sortValue(last, term.field),
           ),

@@ -196,6 +196,21 @@ export async function createSavedView(
   if (duplicate.length > 0)
     conflict("A saved view with this name already exists");
 
+  if (definition.pinnedPosition !== null) {
+    const [duplicatePinned] = await db
+      .select({ id: schema.savedViewTable.id })
+      .from(schema.savedViewTable)
+      .where(
+        and(
+          eq(schema.savedViewTable.workspaceId, workspaceId),
+          eq(schema.savedViewTable.ownerUserId, ownerUserId),
+          eq(schema.savedViewTable.pinnedPosition, definition.pinnedPosition),
+        ),
+      )
+      .limit(1);
+    if (duplicatePinned) conflict("That pinned position is already in use");
+  }
+
   const documents = storageDocuments(definition);
   const [row] = await db
     .insert(schema.savedViewTable)
@@ -248,6 +263,22 @@ export async function updateSavedView(
   if (duplicate.length > 0)
     conflict("A saved view with this name already exists");
 
+  if (definition.pinnedPosition !== null) {
+    const [duplicatePinned] = await db
+      .select({ id: schema.savedViewTable.id })
+      .from(schema.savedViewTable)
+      .where(
+        and(
+          eq(schema.savedViewTable.workspaceId, workspaceId),
+          eq(schema.savedViewTable.ownerUserId, ownerUserId),
+          ne(schema.savedViewTable.id, viewId),
+          eq(schema.savedViewTable.pinnedPosition, definition.pinnedPosition),
+        ),
+      )
+      .limit(1);
+    if (duplicatePinned) conflict("That pinned position is already in use");
+  }
+
   const documents = storageDocuments(definition);
   const [row] = await db
     .update(schema.savedViewTable)
@@ -264,7 +295,7 @@ export async function updateSavedView(
         eq(schema.savedViewTable.id, viewId),
         eq(schema.savedViewTable.workspaceId, workspaceId),
         eq(schema.savedViewTable.ownerUserId, ownerUserId),
-        eq(schema.savedViewTable.updatedAt, current.updatedAt),
+        sql`date_trunc('milliseconds', ${schema.savedViewTable.updatedAt}) = ${current.updatedAt}`,
       ),
     )
     .returning();

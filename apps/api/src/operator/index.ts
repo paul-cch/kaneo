@@ -193,6 +193,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     validator("param", v.object({ workspaceId: v.string() })),
     validator("query", limitQuery),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ workspace: ["manage_settings"] }),
     async (c) =>
       c.json(
         await listOperatorEvents(
@@ -224,6 +225,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
       v.object({ workspaceId: v.string(), eventId: v.string() }),
     ),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ workspace: ["manage_settings"] }),
     async (c) =>
       c.json(
         await getOperatorEvent(c.get("workspaceId"), c.req.param("eventId")),
@@ -258,11 +260,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     requireWorkspacePermission({ workspace: ["manage_settings"] }),
     async (c) =>
       c.json(
-        await replayOperatorEvent(
-          c.get("workspaceId"),
-          c.req.param("eventId"),
-          c.get("userId"),
-        ),
+        await replayOperatorEvent(c.get("workspaceId"), c.req.param("eventId")),
       ),
   )
   .get(
@@ -343,6 +341,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     validator("param", v.object({ workspaceId: v.string() })),
     validator("query", limitQuery),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ workspace: ["manage_settings"] }),
     async (c) =>
       c.json(
         await listProposals(c.get("workspaceId"), c.req.valid("query").limit),
@@ -384,6 +383,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     validator("param", v.object({ workspaceId: v.string() })),
     validator("query", limitQuery),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ workspace: ["manage_settings"] }),
     async (c) =>
       c.json(
         await listIntegrations(
@@ -450,6 +450,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     ),
     validator("query", limitQuery),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ workspace: ["manage_settings"] }),
     async (c) =>
       c.json(
         await listIdentityMaps(

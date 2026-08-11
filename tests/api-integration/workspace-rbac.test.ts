@@ -273,6 +273,111 @@ describe("API integration: workspace RBAC enforcement", () => {
     });
   });
 
+  it("protects operational data reads from viewers", async () => {
+    const viewer = await createWorkspaceMember({ role: "viewer" });
+
+    mockAuthenticatedSession(viewer.user);
+    const { app } = createApp();
+    const base = `/api/operator/workspace/${viewer.workspace.id}`;
+    const requests = [
+      app.request(`${base}/outbox`),
+      app.request(`${base}/outbox/event-missing`),
+      app.request(`${base}/proposals`),
+      app.request(`${base}/integrations`),
+      app.request(`${base}/integrations/integration-missing/identity-maps`),
+    ];
+
+    for (const response of await Promise.all(requests)) {
+      expect(response.status).toBe(403);
+      await expect(response.text()).resolves.toBe("Insufficient permissions");
+    }
+  });
+
+  it("allows another workspace admin to replay a failed event", async () => {
+    const owner = await createWorkspaceMember({ role: "admin" });
+    const otherUserId = `user-${randomUUID()}`;
+    const [otherUser] = await db
+      .insert(schema.userTable)
+      .values({
+        id: otherUserId,
+        email: `${otherUserId}@example.com`,
+        emailVerified: true,
+        name: "Second Admin",
+      })
+      .returning();
+    await db.insert(schema.workspaceUserTable).values({
+      workspaceId: owner.workspace.id,
+      userId: otherUser.id,
+      role: "admin",
+      joinedAt: new Date(),
+    });
+    const [event] = await db
+      .insert(schema.operatorOutboxTable)
+      .values({
+        workspaceId: owner.workspace.id,
+        eventType: "test.failed",
+        aggregateType: "test",
+        aggregateId: "aggregate-1",
+        idempotencyKey: `test-replay-${randomUUID()}`,
+        payload: {},
+        status: "failed",
+        replayOwnerUserId: owner.user.id,
+      })
+      .returning();
+
+    mockAuthenticatedSession(otherUser);
+    const { app } = createApp();
+    const response = await app.request(
+      `/api/operator/workspace/${owner.workspace.id}/outbox/${event.id}/replay`,
+      { method: "POST" },
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      id: event.id,
+      status: "pending",
+    });
+  });
+
+  it("links labels applied by triage to the workspace", async () => {
+    const member = await createWorkspaceMember({ role: "member" });
+    const { project, columns } = await createProjectFixture({
+      workspaceId: member.workspace.id,
+    });
+    const task = await seedTask(project.id, columns.todo.id);
+    const [workspaceLabel] = await db
+      .insert(schema.labelTable)
+      .values({
+        workspaceId: member.workspace.id,
+        name: "Triage label",
+        color: "#2563eb",
+      })
+      .returning();
+    const [item] = await db
+      .insert(schema.triageItemTable)
+      .values({
+        workspaceId: member.workspace.id,
+        taskId: task.id,
+        proposedAction: { type: "add_label", value: workspaceLabel.id },
+      })
+      .returning();
+
+    mockAuthenticatedSession(member.user);
+    const { app } = createApp();
+    const response = await app.request(
+      `/api/operator/workspace/${member.workspace.id}/triage-items/${item.id}/apply`,
+      { method: "POST" },
+    );
+    expect(response.status).toBe(200);
+
+    const taskLabel = await db.query.labelTable.findFirst({
+      where: and(
+        eq(schema.labelTable.taskId, task.id),
+        eq(schema.labelTable.name, workspaceLabel.name),
+      ),
+    });
+    expect(taskLabel?.workspaceId).toBe(member.workspace.id);
+  });
+
   describe("bulk task mutations", () => {
     it("blocks a viewer from changing task priority in bulk", async () => {
       const viewer = await createWorkspaceMember({ role: "viewer" });

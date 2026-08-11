@@ -75,6 +75,7 @@ export type SavedViewCursorValue = string | number | null;
 export type SavedViewCursor = {
   taskId: string;
   position: number;
+  sortKey?: string;
   sortValues?: SavedViewCursorValue[];
 };
 
@@ -345,9 +346,17 @@ export function decodeSavedViewCursor(
         throw new Error("invalid cursor sort values");
       }
     }
+    const sortKey = parsed.sortKey;
+    if (
+      sortKey !== undefined &&
+      (typeof sortKey !== "string" || sortKey.length > 500)
+    ) {
+      throw new Error("invalid cursor sort key");
+    }
     return {
       taskId: parsed.taskId,
       position: parsed.position,
+      ...(sortKey === undefined ? {} : { sortKey }),
       ...(sortValues === undefined ? {} : { sortValues }),
     };
   } catch {

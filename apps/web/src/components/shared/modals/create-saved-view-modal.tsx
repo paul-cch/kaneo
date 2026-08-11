@@ -374,7 +374,9 @@ function CreateSavedViewModal({
               <>
                 <p className="mt-1 text-muted-foreground">
                   {t("workspace:focus.previewCount", {
-                    count: previewData.items.length,
+                    count: previewData.nextCursor
+                      ? `first ${previewData.items.length}`
+                      : previewData.items.length,
                   })}
                 </p>
                 <ul className="mt-2 space-y-1 text-muted-foreground">

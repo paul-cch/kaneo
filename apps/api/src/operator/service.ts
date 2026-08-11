@@ -1,10 +1,12 @@
 import { createId } from "@paralleldrive/cuid2";
-import { and, asc, desc, eq, gte, lte, ne } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lte, ne } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 import db, { schema } from "../database";
 import { publishEvent } from "../events";
 import { assertValidTaskStatus } from "../task/validate-task-fields";
 import { resolveWorkspaceLabelNames } from "../utils/resolve-workspace-label-names";
+
+type DbOrTx = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 const MAX_PAGE_SIZE = 100;
 const PROJECT_HEALTH = ["on-track", "at-risk", "off-track"] as const;
@@ -528,9 +530,10 @@ export async function enqueueOperatorEvent(
   workspaceId: string,
   input: unknown,
   replayOwnerUserId: string,
+  tx: DbOrTx = db,
 ) {
   const parsed = parseOutboxInput(input);
-  const [created] = await db
+  const [created] = await tx
     .insert(schema.operatorOutboxTable)
     .values({ id: createId(), workspaceId, replayOwnerUserId, ...parsed })
     .onConflictDoNothing({
@@ -541,7 +544,7 @@ export async function enqueueOperatorEvent(
     })
     .returning();
   if (created) return created;
-  const [existing] = await db
+  const [existing] = await tx
     .select()
     .from(schema.operatorOutboxTable)
     .where(
@@ -599,9 +602,10 @@ export async function recordJobAttempt(
   workspaceId: string,
   eventId: string,
   input: unknown,
+  tx: DbOrTx = db,
 ) {
   const { status, error } = parseAttemptInput(input);
-  const [event] = await db
+  const [event] = await tx
     .select()
     .from(schema.operatorOutboxTable)
     .where(
@@ -612,14 +616,14 @@ export async function recordJobAttempt(
     )
     .limit(1);
   if (!event) notFound("Operator event not found");
-  const attempts = await db
+  const attempts = await tx
     .select({ attempt: schema.operatorJobAttemptTable.attempt })
     .from(schema.operatorJobAttemptTable)
     .where(eq(schema.operatorJobAttemptTable.outboxId, event.id))
     .orderBy(desc(schema.operatorJobAttemptTable.attempt))
     .limit(1);
   const attempt = (attempts[0]?.attempt ?? 0) + 1;
-  const [created] = await db
+  const [created] = await tx
     .insert(schema.operatorJobAttemptTable)
     .values({
       id: createId(),
@@ -643,14 +647,17 @@ export async function recordJobAttempt(
     status === "failed" && !exhausted
       ? Math.min(60_000, 1_000 * 2 ** (attempt - 1))
       : 0;
-  await db
+  const updates: Partial<typeof schema.operatorOutboxTable.$inferInsert> = {
+    status: nextStatus,
+    lastError: error,
+    updatedAt: new Date(),
+  };
+  if (retryDelayMs > 0) {
+    updates.availableAt = new Date(Date.now() + retryDelayMs);
+  }
+  await tx
     .update(schema.operatorOutboxTable)
-    .set({
-      status: nextStatus,
-      availableAt: new Date(Date.now() + retryDelayMs),
-      lastError: error,
-      updatedAt: new Date(),
-    })
+    .set(updates)
     .where(eq(schema.operatorOutboxTable.id, event.id));
   return { eventId: event.id, attempt: created };
 }
@@ -658,7 +665,6 @@ export async function recordJobAttempt(
 export async function replayOperatorEvent(
   workspaceId: string,
   eventId: string,
-  replayOwnerUserId: string,
 ) {
   const [event] = await db
     .select()
@@ -667,7 +673,6 @@ export async function replayOperatorEvent(
       and(
         eq(schema.operatorOutboxTable.id, eventId),
         eq(schema.operatorOutboxTable.workspaceId, workspaceId),
-        eq(schema.operatorOutboxTable.replayOwnerUserId, replayOwnerUserId),
       ),
     )
     .limit(1);
@@ -982,140 +987,227 @@ export async function applyTriageItem(
   itemId: string,
   currentUserId: string,
 ) {
-  const [item] = await db
-    .select()
-    .from(schema.triageItemTable)
-    .where(
-      and(
-        eq(schema.triageItemTable.id, itemId),
-        eq(schema.triageItemTable.workspaceId, workspaceId),
-      ),
-    )
-    .limit(1);
-  if (!item) notFound("Triage item not found");
-  if (item.status !== "pending") conflict("Triage item is not pending");
-  const task = await assertTaskWorkspace(workspaceId, item.taskId);
-  const action = parseTriageAction(item.proposedAction);
-  const taskUpdate: {
-    status?: string;
-    columnId?: string | null;
-    priority?: string;
-    userId?: string | null;
-    updatedAt: Date;
-  } = {
-    updatedAt: new Date(),
-  };
-  if (action.type === "set_status") {
-    await assertValidTaskStatus(action.value, task.projectId);
-    const [column] = await db
-      .select({ id: schema.columnTable.id })
-      .from(schema.columnTable)
+  const result = await db.transaction(async (tx) => {
+    const claimedAt = new Date();
+    const [item] = await tx
+      .update(schema.triageItemTable)
+      .set({ status: "applying", updatedAt: claimedAt })
       .where(
         and(
-          eq(schema.columnTable.projectId, task.projectId),
-          eq(schema.columnTable.slug, action.value),
+          eq(schema.triageItemTable.id, itemId),
+          eq(schema.triageItemTable.workspaceId, workspaceId),
+          eq(schema.triageItemTable.status, "pending"),
         ),
       )
-      .limit(1);
-    taskUpdate.status = action.value;
-    taskUpdate.columnId = column?.id ?? null;
-  }
-  if (action.type === "set_priority") {
-    taskUpdate.priority = inValues(
-      action.value,
-      TRIAGE_PRIORITIES,
-      "action.value",
-    );
-  }
-  if (action.type === "assign_user") {
-    await assertWorkspaceUser(workspaceId, action.value);
-    taskUpdate.userId = action.value;
-  }
-  if (action.type === "add_label") {
-    const [label] = await db
-      .select()
-      .from(schema.labelTable)
-      .where(
-        and(
-          eq(schema.labelTable.id, action.value),
-          eq(schema.labelTable.workspaceId, workspaceId),
-        ),
-      )
-      .limit(1);
-    if (!label) badRequest("Label must be a workspace label");
-    const [existingLabel] = await db
-      .select({ id: schema.labelTable.id })
-      .from(schema.labelTable)
-      .where(
-        and(
-          eq(schema.labelTable.taskId, task.id),
-          eq(schema.labelTable.name, label.name),
-        ),
-      )
-      .limit(1);
-    if (!existingLabel) {
-      await db.insert(schema.labelTable).values({
-        id: createId(),
-        taskId: task.id,
-        name: label.name,
-        color: label.color,
-      });
+      .returning();
+    if (!item) {
+      const [existing] = await tx
+        .select({ id: schema.triageItemTable.id })
+        .from(schema.triageItemTable)
+        .where(
+          and(
+            eq(schema.triageItemTable.id, itemId),
+            eq(schema.triageItemTable.workspaceId, workspaceId),
+          ),
+        )
+        .limit(1);
+      if (!existing) notFound("Triage item not found");
+      conflict("Triage item is no longer pending");
     }
-  }
-  const delivery = await enqueueOperatorEvent(
-    workspaceId,
-    {
-      eventType: "triage.item.apply",
-      aggregateType: "triage-item",
-      aggregateId: item.id,
-      idempotencyKey: `triage:${item.id}:apply`,
-      payload: { taskId: item.taskId, action },
-    },
-    currentUserId,
-  );
-  const [updatedTask] = await db
-    .update(schema.taskTable)
-    .set(taskUpdate)
-    .where(eq(schema.taskTable.id, task.id))
-    .returning();
-  if (!updatedTask) notFound("Task not found");
-  const [updated] = await db
-    .update(schema.triageItemTable)
-    .set({ status: "applied", appliedAt: new Date(), updatedAt: new Date() })
-    .where(
-      and(
-        eq(schema.triageItemTable.id, item.id),
-        eq(schema.triageItemTable.workspaceId, workspaceId),
-        eq(schema.triageItemTable.status, "pending"),
-      ),
-    )
-    .returning();
-  if (!updated) conflict("Triage item is no longer pending");
-  await recordJobAttempt(workspaceId, delivery.id, { status: "succeeded" });
-  if (task.status !== updatedTask.status) {
-    await publishEvent("task.status_changed", {
-      taskId: updatedTask.id,
-      projectId: updatedTask.projectId,
+
+    const [taskRow] = await tx
+      .select({ task: schema.taskTable })
+      .from(schema.taskTable)
+      .innerJoin(
+        schema.projectTable,
+        eq(schema.taskTable.projectId, schema.projectTable.id),
+      )
+      .where(
+        and(
+          eq(schema.taskTable.id, item.taskId),
+          eq(schema.projectTable.workspaceId, workspaceId),
+        ),
+      )
+      .limit(1);
+    if (!taskRow) notFound("Task not found");
+    const task = taskRow.task;
+    const action = parseTriageAction(item.proposedAction);
+    const taskUpdate: {
+      status?: string;
+      columnId?: string | null;
+      priority?: string;
+      userId?: string | null;
+      updatedAt: Date;
+    } = { updatedAt: new Date() };
+    let insertedLabel: typeof schema.labelTable.$inferSelect | undefined;
+
+    if (action.type === "set_status") {
+      await assertValidTaskStatus(action.value, task.projectId);
+      const [column] = await tx
+        .select({ id: schema.columnTable.id })
+        .from(schema.columnTable)
+        .where(
+          and(
+            eq(schema.columnTable.projectId, task.projectId),
+            eq(schema.columnTable.slug, action.value),
+          ),
+        )
+        .limit(1);
+      taskUpdate.status = action.value;
+      taskUpdate.columnId = column?.id ?? null;
+    }
+    if (action.type === "set_priority") {
+      taskUpdate.priority = inValues(
+        action.value,
+        TRIAGE_PRIORITIES,
+        "action.value",
+      );
+    }
+    if (action.type === "assign_user") {
+      const [membership] = await tx
+        .select({ userId: schema.workspaceUserTable.userId })
+        .from(schema.workspaceUserTable)
+        .where(
+          and(
+            eq(schema.workspaceUserTable.workspaceId, workspaceId),
+            eq(schema.workspaceUserTable.userId, action.value),
+          ),
+        )
+        .limit(1);
+      if (!membership) badRequest("User must belong to the workspace");
+      taskUpdate.userId = action.value;
+    }
+    if (action.type === "add_label") {
+      const [label] = await tx
+        .select()
+        .from(schema.labelTable)
+        .where(
+          and(
+            eq(schema.labelTable.id, action.value),
+            eq(schema.labelTable.workspaceId, workspaceId),
+            isNull(schema.labelTable.taskId),
+          ),
+        )
+        .limit(1);
+      if (!label) badRequest("Label must be a workspace label");
+      const [existingLabel] = await tx
+        .select({ id: schema.labelTable.id })
+        .from(schema.labelTable)
+        .where(
+          and(
+            eq(schema.labelTable.taskId, task.id),
+            eq(schema.labelTable.name, label.name),
+          ),
+        )
+        .limit(1);
+      if (!existingLabel) {
+        [insertedLabel] = await tx
+          .insert(schema.labelTable)
+          .values({
+            id: createId(),
+            taskId: task.id,
+            workspaceId,
+            name: label.name,
+            color: label.color,
+          })
+          .returning();
+      }
+    }
+
+    const delivery = await enqueueOperatorEvent(
+      workspaceId,
+      {
+        eventType: "triage.item.apply",
+        aggregateType: "triage-item",
+        aggregateId: item.id,
+        idempotencyKey: `triage:${item.id}:apply`,
+        payload: { taskId: item.taskId, action },
+      },
+      currentUserId,
+      tx,
+    );
+    const [updatedTask] = await tx
+      .update(schema.taskTable)
+      .set(taskUpdate)
+      .where(eq(schema.taskTable.id, task.id))
+      .returning();
+    if (!updatedTask) notFound("Task not found");
+    const [updated] = await tx
+      .update(schema.triageItemTable)
+      .set({ status: "applied", appliedAt: new Date(), updatedAt: new Date() })
+      .where(
+        and(
+          eq(schema.triageItemTable.id, item.id),
+          eq(schema.triageItemTable.workspaceId, workspaceId),
+          eq(schema.triageItemTable.status, "applying"),
+        ),
+      )
+      .returning();
+    if (!updated) conflict("Triage item changed before apply");
+    await recordJobAttempt(
+      workspaceId,
+      delivery.id,
+      { status: "succeeded" },
+      tx,
+    );
+    return { action, item, task, updated, updatedTask, insertedLabel };
+  });
+
+  if (result.action.type === "assign_user" && result.updatedTask.userId) {
+    const [assignee] = await db
+      .select({ name: schema.userTable.name })
+      .from(schema.userTable)
+      .where(eq(schema.userTable.id, result.updatedTask.userId))
+      .limit(1);
+    await publishEvent("task.assignee_changed", {
+      taskId: result.updatedTask.id,
+      projectId: result.updatedTask.projectId,
       userId: currentUserId,
-      oldStatus: task.status,
-      newStatus: updatedTask.status,
-      title: updatedTask.title,
-      assigneeId: updatedTask.userId,
+      oldAssignee: result.task.userId,
+      newAssignee: assignee?.name,
+      newAssigneeId: result.updatedTask.userId,
+      title: result.updatedTask.title,
+      type: "assignee_changed",
+    });
+  }
+  if (result.insertedLabel) {
+    await publishEvent("task.label_assigned", {
+      label: result.insertedLabel,
+      task: {
+        id: result.updatedTask.id,
+        projectId: result.updatedTask.projectId,
+        workspaceId,
+      },
+      projectId: result.updatedTask.projectId,
+      taskId: result.updatedTask.id,
+      userId: currentUserId,
+      type: "label_assigned",
+    });
+  }
+  if (result.task.status !== result.updatedTask.status) {
+    await publishEvent("task.status_changed", {
+      taskId: result.updatedTask.id,
+      projectId: result.updatedTask.projectId,
+      userId: currentUserId,
+      oldStatus: result.task.status,
+      newStatus: result.updatedTask.status,
+      title: result.updatedTask.title,
+      assigneeId: result.updatedTask.userId,
       type: "status_changed",
     });
     await publishEvent("task-relation.refresh", {
-      projectId: updatedTask.projectId,
+      projectId: result.updatedTask.projectId,
       userId: currentUserId,
     });
   }
   await publishEvent("task.updated", {
-    taskId: updatedTask.id,
-    projectId: updatedTask.projectId,
-    title: updatedTask.title,
-    status: updatedTask.status,
+    taskId: result.updatedTask.id,
+    projectId: result.updatedTask.projectId,
+    title: result.updatedTask.title,
+    status: result.updatedTask.status,
     userId: currentUserId,
   });
-  return updated;
+  return result.updated;
 }
 
 export async function analytics(workspaceId: string, input: unknown) {
@@ -1336,11 +1428,23 @@ export async function reviewProposal(
       and(
         eq(schema.operatorProposalTable.id, proposalId),
         eq(schema.operatorProposalTable.workspaceId, workspaceId),
+        eq(schema.operatorProposalTable.status, "proposed"),
       ),
     )
     .returning();
-  if (!proposal) notFound("Proposal not found");
-  return proposal;
+  if (proposal) return proposal;
+  const [existing] = await db
+    .select({ status: schema.operatorProposalTable.status })
+    .from(schema.operatorProposalTable)
+    .where(
+      and(
+        eq(schema.operatorProposalTable.id, proposalId),
+        eq(schema.operatorProposalTable.workspaceId, workspaceId),
+      ),
+    )
+    .limit(1);
+  if (!existing) notFound("Proposal not found");
+  conflict("Proposal has already been reviewed");
 }
 
 export function parseIntegrationInput(input: unknown) {
