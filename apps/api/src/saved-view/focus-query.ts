@@ -190,11 +190,11 @@ function sortExpression(field: SavedViewSortTerm["field"]): SQL {
         else 0
       end`;
     case "dueDate":
-      return sql`${schema.taskTable.dueDate}`;
+      return sql`date_trunc('milliseconds', ${schema.taskTable.dueDate})`;
     case "updatedAt":
-      return sql`${schema.taskTable.updatedAt}`;
+      return sql`date_trunc('milliseconds', ${schema.taskTable.updatedAt})`;
     case "createdAt":
-      return sql`${schema.taskTable.createdAt}`;
+      return sql`date_trunc('milliseconds', ${schema.taskTable.createdAt})`;
     case "title":
       return sql`lower(${schema.taskTable.title})`;
     case "taskId":

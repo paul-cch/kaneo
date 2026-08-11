@@ -61,9 +61,17 @@ function RouteComponent() {
   const { viewId } = Route.useParams();
   const { data: view } = useGetSavedView(viewId);
   const projectIds = projectIdsFromView(view);
-  const { data, error, isError, isLoading, refetch } =
-    useGetSavedViewTasks(viewId);
-  const items = data?.items ?? [];
+  const {
+    data,
+    error,
+    fetchNextPage,
+    hasNextPage,
+    isError,
+    isFetchingNextPage,
+    isLoading,
+    refetch,
+  } = useGetSavedViewTasks(viewId);
+  const items = data?.pages.flatMap((page) => page.items) ?? [];
   const errorCopy = (() => {
     if (!(error instanceof SavedViewRequestError)) {
       return t("workspace:focus.loadError");
@@ -165,6 +173,19 @@ function RouteComponent() {
                 ))}
               </tbody>
             </table>
+            {hasNextPage ? (
+              <div className="flex justify-center border-t p-3">
+                <Button
+                  variant="outline"
+                  onClick={() => fetchNextPage()}
+                  disabled={isFetchingNextPage}
+                >
+                  {isFetchingNextPage
+                    ? t("workspace:focus.previewLoading")
+                    : t("common:pagination.next")}
+                </Button>
+              </div>
+            ) : null}
           </div>
         )}
       </WorkspaceLayout>

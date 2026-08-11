@@ -1,5 +1,5 @@
 import { createId } from "@paralleldrive/cuid2";
-import { and, asc, desc, eq, gte, isNull, lte, ne } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lte, ne, or } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 import db, { schema } from "../database";
 import { publishEvent } from "../events";
@@ -526,7 +526,7 @@ export function parseOutboxInput(input: unknown) {
   };
 }
 
-export async function enqueueOperatorEvent(
+async function enqueueOperatorEventWithStatus(
   workspaceId: string,
   input: unknown,
   replayOwnerUserId: string,
@@ -543,7 +543,7 @@ export async function enqueueOperatorEvent(
       ],
     })
     .returning();
-  if (created) return created;
+  if (created) return { event: created, created: true };
   const [existing] = await tx
     .select()
     .from(schema.operatorOutboxTable)
@@ -555,7 +555,22 @@ export async function enqueueOperatorEvent(
     )
     .limit(1);
   if (!existing) conflict("Idempotency key was concurrently claimed");
-  return existing;
+  return { event: existing, created: false };
+}
+
+export async function enqueueOperatorEvent(
+  workspaceId: string,
+  input: unknown,
+  replayOwnerUserId: string,
+  tx: DbOrTx = db,
+) {
+  const { event } = await enqueueOperatorEventWithStatus(
+    workspaceId,
+    input,
+    replayOwnerUserId,
+    tx,
+  );
+  return event;
 }
 
 export async function listOperatorEvents(workspaceId: string, limit?: number) {
@@ -1550,17 +1565,7 @@ export async function ingestIntegrationEvent(
       .limit(1);
     localUserId = mapping?.localUserId ?? null;
   }
-  const [existing] = await db
-    .select({ id: schema.operatorOutboxTable.id })
-    .from(schema.operatorOutboxTable)
-    .where(
-      and(
-        eq(schema.operatorOutboxTable.workspaceId, workspaceId),
-        eq(schema.operatorOutboxTable.idempotencyKey, idempotencyKey),
-      ),
-    )
-    .limit(1);
-  const event = await enqueueOperatorEvent(
+  const { event, created } = await enqueueOperatorEventWithStatus(
     workspaceId,
     {
       eventType: `integration.${integration.kind}.received`,
@@ -1578,7 +1583,7 @@ export async function ingestIntegrationEvent(
     },
     replayOwnerUserId,
   );
-  if (parsed.cursor !== undefined) {
+  if (created && parsed.cursor !== undefined) {
     await db
       .update(schema.operatorIntegrationTable)
       .set({ cursor: parsed.cursor, updatedAt: new Date() })
@@ -1588,9 +1593,12 @@ export async function ingestIntegrationEvent(
     integrationId: integration.id,
     externalId: parsed.externalId,
     eventId: event.id,
-    deduplicated: Boolean(existing),
+    deduplicated: !created,
     localUserId,
-    cursor: parsed.cursor === undefined ? integration.cursor : parsed.cursor,
+    cursor:
+      !created || parsed.cursor === undefined
+        ? integration.cursor
+        : parsed.cursor,
   };
 }
 
@@ -1668,23 +1676,53 @@ export async function upsertIdentityMap(
     body.metadata === undefined ? {} : objectField(body, "metadata");
   rejectCredentialKeys(metadata, "metadata");
   await assertWorkspaceUser(workspaceId, localUserId);
-  const [mapped] = await db
-    .insert(schema.operatorIdentityMapTable)
-    .values({
-      id: createId(),
-      workspaceId,
-      integrationId,
-      localUserId,
-      externalIdentity,
-      metadata,
-    })
-    .onConflictDoUpdate({
-      target: [
-        schema.operatorIdentityMapTable.integrationId,
-        schema.operatorIdentityMapTable.externalIdentity,
-      ],
-      set: { localUserId, metadata, updatedAt: new Date() },
-    })
-    .returning();
-  return mapped;
+  return db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(schema.operatorIdentityMapTable)
+      .values({
+        id: createId(),
+        workspaceId,
+        integrationId,
+        localUserId,
+        externalIdentity,
+        metadata,
+      })
+      .onConflictDoNothing()
+      .returning();
+    if (created) return created;
+
+    const matches = await tx
+      .select()
+      .from(schema.operatorIdentityMapTable)
+      .where(
+        and(
+          eq(schema.operatorIdentityMapTable.integrationId, integrationId),
+          or(
+            eq(schema.operatorIdentityMapTable.localUserId, localUserId),
+            eq(
+              schema.operatorIdentityMapTable.externalIdentity,
+              externalIdentity,
+            ),
+          ),
+        ),
+      )
+      .for("update");
+    const mappedByLocal = matches.find(
+      (mapping) => mapping.localUserId === localUserId,
+    );
+    const mappedByExternal = matches.find(
+      (mapping) => mapping.externalIdentity === externalIdentity,
+    );
+    if (mappedByExternal && mappedByExternal.localUserId !== localUserId) {
+      conflict("External identity is already mapped to another user");
+    }
+    const target = mappedByLocal ?? mappedByExternal;
+    if (!target) conflict("Identity mapping changed before update");
+    const [updated] = await tx
+      .update(schema.operatorIdentityMapTable)
+      .set({ externalIdentity, metadata, updatedAt: new Date() })
+      .where(eq(schema.operatorIdentityMapTable.id, target.id))
+      .returning();
+    return updated;
+  });
 }
