@@ -18,7 +18,8 @@ type WorkspaceIdSource =
         | "activity"
         | "comment"
         | "column"
-        | "workflowRule";
+        | "workflowRule"
+        | "savedView";
       idKey: string;
     }
   | {
@@ -137,7 +138,8 @@ async function lookupWorkspaceId(
     | "activity"
     | "comment"
     | "column"
-    | "workflowRule",
+    | "workflowRule"
+    | "savedView",
   id: string,
 ): Promise<string | null> {
   try {
@@ -267,6 +269,15 @@ async function lookupWorkspaceId(
         return workflowRule?.workspaceId || null;
       }
 
+      case "savedView": {
+        const [savedView] = await db
+          .select({ workspaceId: schema.savedViewTable.workspaceId })
+          .from(schema.savedViewTable)
+          .where(eq(schema.savedViewTable.id, id))
+          .limit(1);
+        return savedView?.workspaceId || null;
+      }
+
       default:
         return null;
     }
@@ -356,6 +367,14 @@ export const workspaceAccess = {
     workspaceAccessMiddleware({
       sources: [
         { type: "lookup", resource: "workflowRule", idKey },
+        { type: "query", key: "workspaceId" },
+      ],
+    }),
+
+  fromSavedView: (idKey = "viewId") =>
+    workspaceAccessMiddleware({
+      sources: [
+        { type: "lookup", resource: "savedView", idKey },
         { type: "query", key: "workspaceId" },
       ],
     }),

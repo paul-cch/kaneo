@@ -43,10 +43,12 @@ import { migrateColumns } from "./migrations/column-migration";
 import notification from "./notification";
 import notificationPreferences from "./notification-preferences";
 import oauth from "./oauth";
+import operator from "./operator";
 import { initializePlugins } from "./plugins";
 import { migrateGitHubIntegration } from "./plugins/github/migration";
 import project from "./project";
 import { getPublicProject } from "./project/controllers/get-public-project";
+import savedView, { savedViewWorkspace } from "./saved-view";
 import { initializeScheduler, shutdownScheduler } from "./scheduler";
 import search from "./search";
 import slackIntegration from "./slack-integration";
@@ -566,6 +568,8 @@ export function createApp() {
     notificationPreferences,
   );
   const searchApi = api.route("/search", search);
+  const savedViewApi = api.route("/saved-view", savedView);
+  const operatorApi = api.route("/operator", operator);
   const githubIntegrationApi = api.route(
     "/github-integration",
     githubIntegration,
@@ -589,6 +593,7 @@ export function createApp() {
   const workflowRuleApi = api.route("/workflow-rule", workflowRule);
   const invitationApi = api.route("/invitation", invitation);
   const workspaceApi = api.route("/workspace", workspace);
+  const savedViewWorkspaceApi = api.route("/workspace", savedViewWorkspace);
 
   app.route(
     "/",
@@ -746,6 +751,9 @@ export function createApp() {
     projectApi,
     publicProjectApi,
     searchApi,
+    savedViewApi,
+    operatorApi,
+    savedViewWorkspaceApi,
     slackIntegrationApi,
     taskApi,
     taskRelationApi,
@@ -863,6 +871,9 @@ const {
   projectApi,
   publicProjectApi,
   searchApi,
+  savedViewApi,
+  operatorApi,
+  savedViewWorkspaceApi,
   slackIntegrationApi,
   taskApi,
   taskRelationApi,
@@ -896,6 +907,9 @@ export type AppType =
   | typeof notificationApi
   | typeof notificationPreferencesApi
   | typeof searchApi
+  | typeof savedViewApi
+  | typeof operatorApi
+  | typeof savedViewWorkspaceApi
   | typeof githubIntegrationApi
   | typeof giteaIntegrationApi
   | typeof genericWebhookIntegrationApi

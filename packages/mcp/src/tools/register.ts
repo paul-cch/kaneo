@@ -89,6 +89,48 @@ export function registerTools(
   );
 
   server.registerTool(
+    "list_saved_views",
+    {
+      description: "List personal saved views in a workspace.",
+      inputSchema: z.object({
+        workspaceId: nonEmptyString.describe("Workspace ID"),
+      }),
+    },
+    async (args) =>
+      run(() =>
+        client.json(
+          `/api/workspace/${encodeURIComponent(args.workspaceId)}/saved-views`,
+          { method: "GET" },
+        ),
+      ),
+  );
+
+  server.registerTool(
+    "run_saved_view",
+    {
+      description:
+        "Run a personal saved view with the bounded read-only task projection.",
+      inputSchema: z.object({
+        viewId: nonEmptyString.describe("Saved view ID"),
+        limit: z.number().int().min(1).max(100).optional(),
+        cursor: nonEmptyString.optional(),
+      }),
+    },
+    async (args) => {
+      const query = new URLSearchParams();
+      if (args.limit !== undefined) query.set("limit", String(args.limit));
+      if (args.cursor !== undefined) query.set("cursor", args.cursor);
+      const suffix = query.toString() ? `?${query.toString()}` : "";
+      return run(() =>
+        client.json(
+          `/api/saved-view/${encodeURIComponent(args.viewId)}/tasks${suffix}`,
+          { method: "GET" },
+        ),
+      );
+    },
+  );
+
+  server.registerTool(
     "get_project",
     {
       description: "Get a single project by ID.",
