@@ -222,6 +222,57 @@ describe("API integration: workspace RBAC enforcement", () => {
     });
   });
 
+  describe("operator mutations", () => {
+    it("keeps operator reads available to members but blocks project mutation", async () => {
+      const member = await createWorkspaceMember({ role: "member" });
+      const { project } = await createProjectFixture({
+        workspaceId: member.workspace.id,
+      });
+
+      mockAuthenticatedSession(member.user);
+      const { app } = createApp();
+
+      const read = await app.request(
+        `/api/operator/projects/${project.id}/operator`,
+      );
+      expect(read.status).toBe(200);
+
+      const write = await app.request(
+        `/api/operator/projects/${project.id}/operator`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ status: "paused" }),
+        },
+      );
+      expect(write.status).toBe(403);
+      await expect(write.text()).resolves.toBe("Insufficient permissions");
+    });
+
+    it("blocks member access to workspace operator configuration mutations", async () => {
+      const member = await createWorkspaceMember({ role: "member" });
+
+      mockAuthenticatedSession(member.user);
+      const { app } = createApp();
+
+      const response = await app.request(
+        `/api/operator/workspace/${member.workspace.id}/integrations`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            kind: "linear",
+            displayName: "Linear",
+            status: "disabled",
+            config: {},
+          }),
+        },
+      );
+      expect(response.status).toBe(403);
+      await expect(response.text()).resolves.toBe("Insufficient permissions");
+    });
+  });
+
   describe("bulk task mutations", () => {
     it("blocks a viewer from changing task priority in bulk", async () => {
       const viewer = await createWorkspaceMember({ role: "viewer" });

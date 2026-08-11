@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { validator } from "hono-openapi";
 import * as v from "valibot";
+import { requireWorkspacePermission } from "../utils/require-workspace-permission";
 import { workspaceAccess } from "../utils/workspace-access-middleware";
 import {
   addCycleTask,
@@ -69,6 +70,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     validator("param", v.object({ projectId: v.string() })),
     validator("json", unknownJson),
     workspaceAccess.fromProject("projectId"),
+    requireWorkspacePermission({ project: ["update"] }),
     async (c) =>
       c.json(
         await updateProjectOperator(
@@ -97,6 +99,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     validator("param", v.object({ projectId: v.string() })),
     validator("json", unknownJson),
     workspaceAccess.fromProject("projectId"),
+    requireWorkspacePermission({ project: ["update"] }),
     async (c) =>
       c.json(
         await createProjectUpdate(
@@ -129,6 +132,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     validator("param", v.object({ workspaceId: v.string() })),
     validator("json", unknownJson),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ workspace: ["manage_settings"] }),
     async (c) =>
       c.json(await createCycle(c.get("workspaceId"), c.req.valid("json")), 201),
   )
@@ -152,6 +156,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     ),
     validator("json", unknownJson),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ task: ["update"] }),
     async (c) =>
       c.json(
         await addCycleTask(
@@ -173,6 +178,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
       }),
     ),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ task: ["update"] }),
     async (c) =>
       c.json(
         await removeCycleTask(
@@ -200,6 +206,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     validator("param", v.object({ workspaceId: v.string() })),
     validator("json", unknownJson),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ workspace: ["manage_settings"] }),
     async (c) =>
       c.json(
         await enqueueOperatorEvent(
@@ -230,6 +237,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     ),
     validator("json", unknownJson),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ workspace: ["manage_settings"] }),
     async (c) =>
       c.json(
         await recordJobAttempt(
@@ -247,6 +255,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
       v.object({ workspaceId: v.string(), eventId: v.string() }),
     ),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ workspace: ["manage_settings"] }),
     async (c) =>
       c.json(
         await replayOperatorEvent(
@@ -271,6 +280,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     validator("param", v.object({ workspaceId: v.string() })),
     validator("json", unknownJson),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ workspace: ["manage_settings"] }),
     async (c) =>
       c.json(
         await createTriageRule(
@@ -296,6 +306,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     validator("param", v.object({ workspaceId: v.string() })),
     validator("json", unknownJson),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ workspace: ["manage_settings"] }),
     async (c) =>
       c.json(
         await enqueueTriageItem(c.get("workspaceId"), c.req.valid("json")),
@@ -309,6 +320,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
       v.object({ workspaceId: v.string(), itemId: v.string() }),
     ),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ task: ["update"] }),
     async (c) =>
       c.json(
         await applyTriageItem(
@@ -341,6 +353,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     validator("param", v.object({ workspaceId: v.string() })),
     validator("json", unknownJson),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ workspace: ["manage_settings"] }),
     async (c) =>
       c.json(
         await createProposal(c.get("workspaceId"), c.req.valid("json")),
@@ -355,6 +368,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     ),
     validator("json", unknownJson),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ workspace: ["manage_settings"] }),
     async (c) =>
       c.json(
         await reviewProposal(
@@ -383,6 +397,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     validator("param", v.object({ workspaceId: v.string() })),
     validator("json", unknownJson),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ workspace: ["manage_settings"] }),
     async (c) =>
       c.json(
         await createIntegration(c.get("workspaceId"), c.req.valid("json")),
@@ -397,6 +412,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     ),
     validator("json", unknownJson),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ workspace: ["manage_settings"] }),
     async (c) =>
       c.json(
         await ingestIntegrationEvent(
@@ -416,6 +432,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     ),
     validator("json", unknownJson),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ workspace: ["manage_settings"] }),
     async (c) =>
       c.json(
         await updateIntegrationCursor(
@@ -450,6 +467,7 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     ),
     validator("json", unknownJson),
     workspaceAccess.fromParam(),
+    requireWorkspacePermission({ workspace: ["manage_settings"] }),
     async (c) =>
       c.json(
         await upsertIdentityMap(

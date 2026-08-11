@@ -48,11 +48,37 @@ describe("operator slice contracts", () => {
           projectId: "p1",
           userId: null,
           title: "Deploy Kaneo",
-          labelIds: [],
+          labelNames: [],
         },
         { priority: ["urgent"], titleIncludes: "kaneo" },
       ),
     ).toBe(true);
+    expect(
+      matchesTriageConditions(
+        {
+          status: "to-do",
+          priority: "high",
+          projectId: "p1",
+          userId: null,
+          title: "Labelled task",
+          labelNames: ["Incident"],
+        },
+        { labelId: ["Incident"] },
+      ),
+    ).toBe(true);
+    expect(
+      matchesTriageConditions(
+        {
+          status: "to-do",
+          priority: "high",
+          projectId: "p1",
+          userId: null,
+          title: "Labelled task",
+          labelNames: ["Incident"],
+        },
+        { labelId: ["workspace-label-row-id"] },
+      ),
+    ).toBe(false);
     expect(() =>
       parseTriageRuleInput({
         name: "Route urgent",

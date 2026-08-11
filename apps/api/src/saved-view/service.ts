@@ -1,18 +1,18 @@
 import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 import db, { schema } from "../database";
+import { resolveWorkspaceLabelNames } from "../utils/resolve-workspace-label-names";
 import {
-  decodeSavedViewCursor,
-  encodeSavedViewCursor,
   normalizeSavedViewDefinition,
-  SAVED_VIEW_MAX_PAGE_SIZE,
-  type SavedViewCursor,
-  type SavedViewCursorValue,
   type SavedViewDefinition,
   type SavedViewFilterValues,
-  type SavedViewSortTerm,
   storageDocuments,
 } from "./contract";
+
+import {
+  runFocusFacets as runFocusFacetsSql,
+  runFocusQuery as runFocusQuerySql,
+} from "./focus-query";
 
 type SavedViewRow = typeof schema.savedViewTable.$inferSelect;
 
@@ -77,7 +77,7 @@ function conflict(message: string): never {
 async function assertReferences(
   workspaceId: string,
   filters: SavedViewFilterValues,
-): Promise<void> {
+): Promise<Map<string, string>> {
   const projects = await db
     .select({ id: schema.projectTable.id })
     .from(schema.projectTable)
@@ -110,32 +110,7 @@ async function assertReferences(
     }
   }
 
-  if (filters.labelIds.length > 0) {
-    const labels = await db
-      .select({
-        id: schema.labelTable.id,
-        workspaceId: schema.labelTable.workspaceId,
-        projectWorkspaceId: schema.projectTable.workspaceId,
-      })
-      .from(schema.labelTable)
-      .leftJoin(
-        schema.taskTable,
-        eq(schema.labelTable.taskId, schema.taskTable.id),
-      )
-      .leftJoin(
-        schema.projectTable,
-        eq(schema.taskTable.projectId, schema.projectTable.id),
-      )
-      .where(inArray(schema.labelTable.id, filters.labelIds));
-    const accessible = labels.filter(
-      (label) =>
-        label.workspaceId === workspaceId ||
-        label.projectWorkspaceId === workspaceId,
-    );
-    if (accessible.length !== filters.labelIds.length) {
-      badRequest("Every labelId must belong to the workspace");
-    }
-  }
+  return resolveWorkspaceLabelNames(workspaceId, filters.labelIds);
 }
 
 async function ownedView(
@@ -317,215 +292,6 @@ export async function deleteSavedView(
   return { id: row.id, deleted: true };
 }
 
-type TaskRow = {
-  id: string;
-  projectId: string;
-  projectName: string;
-  projectSlug: string;
-  number: number | null;
-  title: string;
-  status: string;
-  priority: string | null;
-  dueDate: Date | null;
-  createdAt: Date;
-  updatedAt: Date;
-  columnIsFinal: boolean | null;
-  assigneeId: string | null;
-  assigneeName: string | null;
-};
-
-const priorityRank: Record<string, number> = {
-  "no-priority": 0,
-  low: 1,
-  medium: 2,
-  high: 3,
-  urgent: 4,
-};
-
-function sortValue(
-  task: Pick<
-    TaskRow,
-    "id" | "priority" | "dueDate" | "updatedAt" | "createdAt" | "title"
-  >,
-  field: SavedViewSortTerm["field"],
-): SavedViewCursorValue {
-  switch (field) {
-    case "priority":
-      return priorityRank[task.priority ?? "no-priority"] ?? 0;
-    case "dueDate":
-      return task.dueDate?.getTime() ?? null;
-    case "updatedAt":
-      return task.updatedAt.getTime();
-    case "createdAt":
-      return task.createdAt.getTime();
-    case "title":
-      return task.title.toLocaleLowerCase();
-    case "taskId":
-      return task.id;
-  }
-}
-
-function compareSortValues(
-  left: SavedViewCursorValue,
-  right: SavedViewCursorValue,
-  term: SavedViewSortTerm,
-): number {
-  const direction = term.direction === "asc" ? 1 : -1;
-  if (left === null || right === null) {
-    if (left === right) return 0;
-    const nullsLast = term.nulls !== "first";
-    return left === null ? (nullsLast ? 1 : -1) : nullsLast ? -1 : 1;
-  }
-  if (left === right) return 0;
-  return (left < right ? -1 : 1) * direction;
-}
-
-function compareValues(
-  a: TaskRow,
-  b: TaskRow,
-  term: SavedViewSortTerm,
-): number {
-  return compareSortValues(
-    sortValue(a, term.field),
-    sortValue(b, term.field),
-    term,
-  );
-}
-
-function isDueMatch(
-  due: SavedViewFilterValues["due"],
-  date: Date | null,
-): boolean {
-  const now = new Date();
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
-  if (due === "any") return true;
-  if (due === "no-due-date") return date === null;
-  if (!date) return false;
-  if (due === "overdue") return date < start;
-  if (due === "today") return date >= start && date < end;
-  const days = due === "next-7-days" ? 7 : 30;
-  const horizon = new Date(start);
-  horizon.setDate(horizon.getDate() + days + 1);
-  return date >= start && date < horizon;
-}
-
-async function taskLabels(taskIds: string[]): Promise<Map<string, string[]>> {
-  if (taskIds.length === 0) return new Map();
-  const labels = await db
-    .select({ taskId: schema.labelTable.taskId, labelId: schema.labelTable.id })
-    .from(schema.labelTable)
-    .where(inArray(schema.labelTable.taskId, taskIds));
-  const byTask = new Map<string, string[]>();
-  for (const label of labels) {
-    if (!label.taskId) continue;
-    const values = byTask.get(label.taskId) ?? [];
-    values.push(label.labelId);
-    byTask.set(label.taskId, values);
-  }
-  return byTask;
-}
-
-async function queryTasks(
-  workspaceId: string,
-  definition: SavedViewDefinition,
-): Promise<SavedViewTask[]> {
-  const filters = definition.filters;
-  const rows = await db
-    .select({
-      id: schema.taskTable.id,
-      projectId: schema.projectTable.id,
-      projectName: schema.projectTable.name,
-      projectSlug: schema.projectTable.slug,
-      number: schema.taskTable.number,
-      title: schema.taskTable.title,
-      description: schema.taskTable.description,
-      status: schema.taskTable.status,
-      priority: schema.taskTable.priority,
-      dueDate: schema.taskTable.dueDate,
-      createdAt: schema.taskTable.createdAt,
-      updatedAt: schema.taskTable.updatedAt,
-      columnIsFinal: schema.columnTable.isFinal,
-      assigneeId: schema.userTable.id,
-      assigneeName: schema.userTable.name,
-    })
-    .from(schema.taskTable)
-    .innerJoin(
-      schema.projectTable,
-      eq(schema.taskTable.projectId, schema.projectTable.id),
-    )
-    .leftJoin(
-      schema.columnTable,
-      eq(schema.taskTable.columnId, schema.columnTable.id),
-    )
-    .leftJoin(
-      schema.userTable,
-      eq(schema.taskTable.userId, schema.userTable.id),
-    )
-    .where(
-      and(
-        eq(schema.projectTable.workspaceId, workspaceId),
-        inArray(schema.projectTable.id, filters.projectIds),
-        filters.assigneeIds.length > 0
-          ? inArray(schema.taskTable.userId, filters.assigneeIds)
-          : undefined,
-        filters.priorities.length > 0
-          ? inArray(schema.taskTable.priority, filters.priorities)
-          : undefined,
-        filters.text
-          ? sql`to_tsvector('simple', coalesce(${schema.taskTable.title}, '') || ' ' || coalesce(${schema.taskTable.description}, '')) @@ plainto_tsquery('simple', ${filters.text})`
-          : undefined,
-      ),
-    );
-  const labelsByTask = await taskLabels(rows.map((row) => row.id));
-  const filtered = rows.filter((row) => {
-    if (filters.state === "active" && row.columnIsFinal === true) return false;
-    if (filters.state === "final" && row.columnIsFinal !== true) return false;
-    if (!isDueMatch(filters.due, row.dueDate)) return false;
-    if (
-      filters.labelIds.length > 0 &&
-      !filters.labelIds.some((labelId) =>
-        labelsByTask.get(row.id)?.includes(labelId),
-      )
-    ) {
-      return false;
-    }
-    return true;
-  });
-  filtered.sort((a, b) => {
-    for (const term of definition.sort) {
-      const result = compareValues(a, b, term);
-      if (result !== 0) return result;
-    }
-    return a.id.localeCompare(b.id);
-  });
-  return filtered.map((row) => ({
-    id: row.id,
-    workspaceId,
-    shortId: `${row.projectSlug}-${row.number ?? 0}`,
-    number: row.number ?? 0,
-    title: row.title,
-    status: row.status,
-    priority: row.priority ?? "no-priority",
-    dueDate: row.dueDate,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    project: {
-      id: row.projectId,
-      name: row.projectName,
-      slug: row.projectSlug,
-    },
-    assignee:
-      row.assigneeId && row.assigneeName
-        ? { id: row.assigneeId, name: row.assigneeName }
-        : null,
-    labels: labelsByTask.get(row.id) ?? [],
-    url: `/dashboard/workspace/${workspaceId}/project/${row.projectId}/task/${row.id}`,
-  }));
-}
-
 export type SavedViewFacets = {
   total: number;
   queryMs: number;
@@ -537,39 +303,6 @@ export type SavedViewFacets = {
     labels: Record<string, number>;
   };
 };
-
-export async function runFocusFacets(
-  workspaceId: string,
-  definition: SavedViewDefinition,
-): Promise<SavedViewFacets> {
-  await assertReferences(workspaceId, definition.filters);
-  const startedAt = performance.now();
-  const items = await queryTasks(workspaceId, definition);
-  const facets: SavedViewFacets["facets"] = {
-    projects: {},
-    statuses: {},
-    priorities: {},
-    assignees: {},
-    labels: {},
-  };
-  for (const item of items) {
-    facets.projects[item.project.id] =
-      (facets.projects[item.project.id] ?? 0) + 1;
-    facets.statuses[item.status] = (facets.statuses[item.status] ?? 0) + 1;
-    facets.priorities[item.priority] =
-      (facets.priorities[item.priority] ?? 0) + 1;
-    const assignee = item.assignee?.id ?? "unassigned";
-    facets.assignees[assignee] = (facets.assignees[assignee] ?? 0) + 1;
-    for (const label of item.labels) {
-      facets.labels[label] = (facets.labels[label] ?? 0) + 1;
-    }
-  }
-  return {
-    total: items.length,
-    queryMs: Math.max(0, Math.round(performance.now() - startedAt)),
-    facets,
-  };
-}
 
 export async function runSavedView(
   viewId: string,
@@ -583,54 +316,35 @@ export async function runSavedView(
   return runFocusQuery(workspaceId, definition, limit, cursorValue);
 }
 
+export async function runFocusFacets(
+  workspaceId: string,
+  definition: SavedViewDefinition,
+): Promise<SavedViewFacets> {
+  const labelNamesById = await assertReferences(
+    workspaceId,
+    definition.filters,
+  );
+  return runFocusFacetsSql(workspaceId, definition, labelNamesById);
+}
+
 export async function runFocusQuery(
   workspaceId: string,
   definition: SavedViewDefinition,
   limit: number,
   cursorValue?: string,
 ): Promise<SavedViewPage> {
-  await assertReferences(workspaceId, definition.filters);
-  const safeLimit = Math.min(
-    Math.max(Math.floor(limit || 50), 1),
-    SAVED_VIEW_MAX_PAGE_SIZE,
+  const labelNamesById = await assertReferences(
+    workspaceId,
+    definition.filters,
   );
-  const cursor: SavedViewCursor | null = decodeSavedViewCursor(cursorValue);
-  const items = await queryTasks(workspaceId, definition);
-  let start = 0;
-  if (cursor) {
-    if (cursor.sortValues?.length === definition.sort.length) {
-      const index = items.findIndex((item) => {
-        for (const [position, term] of definition.sort.entries()) {
-          const result = compareSortValues(
-            sortValue(item, term.field),
-            cursor.sortValues?.[position] ?? null,
-            term,
-          );
-          if (result !== 0) return result > 0;
-        }
-        return item.id.localeCompare(cursor.taskId) > 0;
-      });
-      start = index < 0 ? items.length : index;
-    } else {
-      const index = items.findIndex((item) => item.id === cursor.taskId);
-      start = index < 0 ? cursor.position + 1 : index + 1;
-    }
-  }
-  const page = items.slice(start, start + safeLimit);
-  const last = page.at(-1);
-  const nextCursor =
-    last && start + page.length < items.length
-      ? encodeSavedViewCursor({
-          taskId: last.id,
-          position: start + page.length - 1,
-          sortValues: definition.sort.map((term) =>
-            sortValue(last, term.field),
-          ),
-        })
-      : null;
-  return { items: page, nextCursor };
+  return runFocusQuerySql(
+    workspaceId,
+    definition,
+    limit,
+    cursorValue,
+    labelNamesById,
+  );
 }
-
 export async function normalizeFocusInput(
   input: unknown,
 ): Promise<SavedViewDefinition> {

@@ -4,6 +4,7 @@ import { HTTPException } from "hono/http-exception";
 import db, { schema } from "../database";
 import { publishEvent } from "../events";
 import { assertValidTaskStatus } from "../task/validate-task-fields";
+import { resolveWorkspaceLabelNames } from "../utils/resolve-workspace-label-names";
 
 const MAX_PAGE_SIZE = 100;
 const PROJECT_HEALTH = ["on-track", "at-risk", "off-track"] as const;
@@ -776,13 +777,27 @@ export function parseTriageConditions(input: unknown): TriageConditions {
   };
 }
 
+async function resolveTriageConditions(
+  workspaceId: string,
+  conditions: TriageConditions,
+): Promise<TriageConditions> {
+  if (!conditions.labelId) return conditions;
+  const labels = await resolveWorkspaceLabelNames(
+    workspaceId,
+    conditions.labelId,
+  );
+  return {
+    ...conditions,
+    labelId: conditions.labelId.map((labelId) => labels.get(labelId) as string),
+  };
+}
 type TriageTask = {
   status: string;
   priority: string | null;
   projectId: string;
   userId: string | null;
   title: string;
-  labelIds: string[];
+  labelNames: string[];
 };
 
 export function matchesTriageConditions(
@@ -797,7 +812,9 @@ export function matchesTriageConditions(
     matches(conditions.projectId, task.projectId) &&
     matches(conditions.assigneeId, task.userId) &&
     (conditions.labelId === undefined ||
-      conditions.labelId.some((labelId) => task.labelIds.includes(labelId))) &&
+      conditions.labelId.some((labelName) =>
+        task.labelNames.includes(labelName),
+      )) &&
     (conditions.titleIncludes === undefined ||
       task.title
         .toLocaleLowerCase()
@@ -833,6 +850,7 @@ export async function createTriageRule(
   input: unknown,
 ) {
   const parsed = parseTriageRuleInput(input);
+  await resolveTriageConditions(workspaceId, parsed.conditions);
   if (parsed.action.type === "assign_user") {
     await assertWorkspaceUser(workspaceId, parsed.action.value);
   }
@@ -860,7 +878,7 @@ export async function enqueueTriageItem(workspaceId: string, input: unknown) {
   const taskId = stringField(body, "taskId") as string;
   const task = await assertTaskWorkspace(workspaceId, taskId);
   const labels = await db
-    .select({ id: schema.labelTable.id })
+    .select({ name: schema.labelTable.name })
     .from(schema.labelTable)
     .where(eq(schema.labelTable.taskId, taskId));
   const triageTask: TriageTask = {
@@ -869,7 +887,7 @@ export async function enqueueTriageItem(workspaceId: string, input: unknown) {
     projectId: task.projectId,
     userId: task.userId,
     title: task.title,
-    labelIds: labels.map((label) => label.id),
+    labelNames: labels.map((label) => label.name),
   };
   const requestedRuleId = stringField(body, "ruleId", { optional: true });
   const suppliedAction =
@@ -904,22 +922,25 @@ export async function enqueueTriageItem(workspaceId: string, input: unknown) {
         asc(schema.triageRuleTable.priority),
         asc(schema.triageRuleTable.createdAt),
       );
-    selectedRule = rules.find((rule) =>
-      matchesTriageConditions(
-        triageTask,
+    for (const rule of rules) {
+      const conditions = await resolveTriageConditions(
+        workspaceId,
         parseTriageConditions(rule.conditions),
-      ),
-    );
+      );
+      if (matchesTriageConditions(triageTask, conditions)) {
+        selectedRule = rule;
+        break;
+      }
+    }
     if (!selectedRule) badRequest("No enabled triage rule matched task");
   }
   if (selectedRule) {
     if (!selectedRule.enabled) conflict("Triage rule is disabled");
-    if (
-      !matchesTriageConditions(
-        triageTask,
-        parseTriageConditions(selectedRule.conditions),
-      )
-    ) {
+    const conditions = await resolveTriageConditions(
+      workspaceId,
+      parseTriageConditions(selectedRule.conditions),
+    );
+    if (!matchesTriageConditions(triageTask, conditions)) {
       conflict("Triage rule does not match task");
     }
   }
