@@ -1,4 +1,4 @@
-import { and, eq, ilike, inArray, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 import db, { schema } from "../database";
 import {
@@ -29,6 +29,7 @@ export type SavedViewSummary = {
 
 export type SavedViewTask = {
   id: string;
+  workspaceId: string;
   shortId: string;
   number: number;
   title: string;
@@ -170,6 +171,7 @@ function normalizeStoredDefinition(row: SavedViewRow): SavedViewDefinition {
 export async function listSavedViews(
   workspaceId: string,
   ownerUserId: string,
+  limit?: number,
 ): Promise<SavedViewSummary[]> {
   const rows = await db
     .select()
@@ -179,18 +181,14 @@ export async function listSavedViews(
         eq(schema.savedViewTable.workspaceId, workspaceId),
         eq(schema.savedViewTable.ownerUserId, ownerUserId),
       ),
-    );
-  return rows
-    .sort((a, b) => {
-      if (a.pinnedPosition === null && b.pinnedPosition !== null) return 1;
-      if (a.pinnedPosition !== null && b.pinnedPosition === null) return -1;
-      return (
-        (a.pinnedPosition ?? Number.MAX_SAFE_INTEGER) -
-          (b.pinnedPosition ?? Number.MAX_SAFE_INTEGER) ||
-        a.name.localeCompare(b.name)
-      );
-    })
-    .map(viewSummary);
+    )
+    .orderBy(
+      sql`case when ${schema.savedViewTable.pinnedPosition} is null then 1 else 0 end`,
+      asc(schema.savedViewTable.pinnedPosition),
+      asc(schema.savedViewTable.name),
+    )
+    .limit(Math.min(Math.max(limit ?? 50, 1), 100));
+  return rows.map(viewSummary);
 }
 
 export async function getSavedView(
@@ -477,10 +475,7 @@ async function queryTasks(
           ? inArray(schema.taskTable.priority, filters.priorities)
           : undefined,
         filters.text
-          ? or(
-              ilike(schema.taskTable.title, `%${filters.text}%`),
-              ilike(schema.taskTable.description, `%${filters.text}%`),
-            )
+          ? sql`to_tsvector('simple', coalesce(${schema.taskTable.title}, '') || ' ' || coalesce(${schema.taskTable.description}, '')) @@ plainto_tsquery('simple', ${filters.text})`
           : undefined,
       ),
     );
@@ -508,6 +503,7 @@ async function queryTasks(
   });
   return filtered.map((row) => ({
     id: row.id,
+    workspaceId,
     shortId: `${row.projectSlug}-${row.number ?? 0}`,
     number: row.number ?? 0,
     title: row.title,
@@ -530,6 +526,51 @@ async function queryTasks(
   }));
 }
 
+export type SavedViewFacets = {
+  total: number;
+  queryMs: number;
+  facets: {
+    projects: Record<string, number>;
+    statuses: Record<string, number>;
+    priorities: Record<string, number>;
+    assignees: Record<string, number>;
+    labels: Record<string, number>;
+  };
+};
+
+export async function runFocusFacets(
+  workspaceId: string,
+  definition: SavedViewDefinition,
+): Promise<SavedViewFacets> {
+  await assertReferences(workspaceId, definition.filters);
+  const startedAt = performance.now();
+  const items = await queryTasks(workspaceId, definition);
+  const facets: SavedViewFacets["facets"] = {
+    projects: {},
+    statuses: {},
+    priorities: {},
+    assignees: {},
+    labels: {},
+  };
+  for (const item of items) {
+    facets.projects[item.project.id] =
+      (facets.projects[item.project.id] ?? 0) + 1;
+    facets.statuses[item.status] = (facets.statuses[item.status] ?? 0) + 1;
+    facets.priorities[item.priority] =
+      (facets.priorities[item.priority] ?? 0) + 1;
+    const assignee = item.assignee?.id ?? "unassigned";
+    facets.assignees[assignee] = (facets.assignees[assignee] ?? 0) + 1;
+    for (const label of item.labels) {
+      facets.labels[label] = (facets.labels[label] ?? 0) + 1;
+    }
+  }
+  return {
+    total: items.length,
+    queryMs: Math.max(0, Math.round(performance.now() - startedAt)),
+    facets,
+  };
+}
+
 export async function runSavedView(
   viewId: string,
   workspaceId: string,
@@ -548,6 +589,7 @@ export async function runFocusQuery(
   limit: number,
   cursorValue?: string,
 ): Promise<SavedViewPage> {
+  await assertReferences(workspaceId, definition.filters);
   const safeLimit = Math.min(
     Math.max(Math.floor(limit || 50), 1),
     SAVED_VIEW_MAX_PAGE_SIZE,

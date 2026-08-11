@@ -116,6 +116,21 @@ function CreateSavedViewModal({
     );
   };
 
+  const priorityLabel = (priority: string) => {
+    switch (priority) {
+      case "urgent":
+        return t("tasks:priority.urgent");
+      case "high":
+        return t("tasks:priority.high");
+      case "medium":
+        return t("tasks:priority.medium");
+      case "low":
+        return t("tasks:priority.low");
+      default:
+        return t("tasks:priority.no-priority");
+    }
+  };
+
   const toggleValue = (
     setter: React.Dispatch<React.SetStateAction<string[]>>,
     value: string,
@@ -197,6 +212,13 @@ function CreateSavedViewModal({
                     onClick={() => toggleProject(project.id)}
                   >
                     {project.name}
+                    <span className="text-xs text-muted-foreground">
+                      (
+                      {t("workspace:focus.projectTaskCount", {
+                        count: project.statistics?.totalTasks ?? 0,
+                      })}
+                      )
+                    </span>
                   </Button>
                 );
               })}
@@ -271,7 +293,7 @@ function CreateSavedViewModal({
                     checked={priorities.includes(priority)}
                     onChange={() => toggleValue(setPriorities, priority)}
                   />
-                  {t(`tasks:priority.${priority}`)}
+                  {priorityLabel(priority)}
                 </label>
               ))}
             </div>

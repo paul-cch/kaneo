@@ -115,6 +115,17 @@ function objectValue(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function allowedKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  label: string,
+): void {
+  const allowedSet = new Set(allowed);
+  for (const key of Object.keys(value)) {
+    if (!allowedSet.has(key)) fail(`${label}.${key} is unsupported`);
+  }
+}
+
 function stringArray(value: unknown, label: string): string[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) fail(`${label} must be an array`);
@@ -136,9 +147,10 @@ function sortTerms(value: unknown): SavedViewSortTerm[] {
     fail("sort must contain between 1 and 4 terms");
   }
 
-  const seen = new Set<string>();
+  const seenFields = new Set<string>();
   const normalized = terms.map((entry) => {
     const raw = objectValue(entry, "sort term");
+    allowedKeys(raw, ["field", "direction", "nulls"], "sort term");
     if (
       typeof raw.field !== "string" ||
       !SORT_FIELDS.has(raw.field as SavedViewSortField)
@@ -148,9 +160,9 @@ function sortTerms(value: unknown): SavedViewSortTerm[] {
     if (raw.direction !== "asc" && raw.direction !== "desc") {
       fail("sort direction must be asc or desc");
     }
-    const key = `${raw.field}:${raw.direction}`;
-    if (seen.has(key)) fail("sort must not contain duplicate terms");
-    seen.add(key);
+    if (seenFields.has(raw.field))
+      fail("sort must not contain duplicate fields");
+    seenFields.add(raw.field);
     const nulls = raw.nulls;
     if (nulls !== undefined && nulls !== "first" && nulls !== "last") {
       fail("sort nulls must be first or last");
@@ -166,10 +178,12 @@ function sortTerms(value: unknown): SavedViewSortTerm[] {
     };
   });
 
-  if (!normalized.some((term) => term.field === "taskId")) {
-    normalized.push({ field: "taskId", direction: "asc" });
+  const taskIdTerm = normalized.find((term) => term.field === "taskId");
+  const nonTaskTerms = normalized.filter((term) => term.field !== "taskId");
+  if (!taskIdTerm && nonTaskTerms.length >= 4) {
+    fail("sort must leave room for the taskId tie-breaker");
   }
-  return normalized.slice(0, 4);
+  return [...nonTaskTerms, taskIdTerm ?? { field: "taskId", direction: "asc" }];
 }
 
 export function normalizeSavedViewDefinition(
@@ -179,6 +193,11 @@ export function normalizeSavedViewDefinition(
   pinnedPosition: number | null;
 } {
   const raw = objectValue(input, "saved view");
+  allowedKeys(
+    raw,
+    ["name", "filters", "sort", "pinnedPosition", "updatedAt"],
+    "saved view",
+  );
   if (typeof raw.name !== "string") fail("name is required");
   const name = raw.name.trim();
   if (name.length === 0 || name.length > SAVED_VIEW_MAX_NAME_LENGTH) {
@@ -187,8 +206,39 @@ export function normalizeSavedViewDefinition(
 
   const filterDocument = objectValue(raw.filters, "filters");
   const nested = filterDocument.filters;
+  allowedKeys(
+    filterDocument,
+    nested === undefined
+      ? [
+          "schemaVersion",
+          "filters",
+          "sort",
+          "projectIds",
+          "state",
+          "priorities",
+          "assigneeIds",
+          "labelIds",
+          "due",
+          "text",
+        ]
+      : ["schemaVersion", "filters", "sort"],
+    "filters",
+  );
   const values = objectValue(
     nested === undefined ? filterDocument : nested,
+    "filters",
+  );
+  allowedKeys(
+    values,
+    [
+      "projectIds",
+      "state",
+      "priorities",
+      "assigneeIds",
+      "labelIds",
+      "due",
+      "text",
+    ],
     "filters",
   );
   const schemaVersion =

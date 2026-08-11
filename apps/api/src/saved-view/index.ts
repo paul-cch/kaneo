@@ -8,6 +8,7 @@ import {
   getSavedView,
   listSavedViews,
   normalizeFocusInput,
+  runFocusFacets,
   runFocusQuery,
   runSavedView,
   updateSavedView,
@@ -38,10 +39,15 @@ export const savedViewWorkspace = new Hono<{ Variables: RouteVariables }>()
   .get(
     "/:workspaceId/saved-views",
     validator("param", v.object({ workspaceId: v.string() })),
+    validator("query", listQuery),
     workspaceAccess.fromParam(),
     async (c) => {
       return c.json(
-        await listSavedViews(c.get("workspaceId"), c.get("userId")),
+        await listSavedViews(
+          c.get("workspaceId"),
+          c.get("userId"),
+          c.req.valid("query").limit,
+        ),
       );
     },
   )
@@ -71,6 +77,16 @@ export const savedViewWorkspace = new Hono<{ Variables: RouteVariables }>()
       return c.json(
         await runFocusQuery(c.get("workspaceId"), definition, limit, cursor),
       );
+    },
+  )
+  .post(
+    "/:workspaceId/focus-facets",
+    validator("param", v.object({ workspaceId: v.string() })),
+    validator("json", unknownJson),
+    workspaceAccess.fromParam(),
+    async (c) => {
+      const definition = await normalizeFocusInput(c.req.valid("json"));
+      return c.json(await runFocusFacets(c.get("workspaceId"), definition));
     },
   );
 

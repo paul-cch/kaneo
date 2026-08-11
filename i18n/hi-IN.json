@@ -2013,6 +2013,7 @@
 			"name": "View name",
 			"namePlaceholder": "Homelab triage",
 			"projects": "Projects",
+			"projectTaskCount": "{{count}} tasks",
 			"noProjects": "Create a project before saving a focus view.",
 			"textFilter": "Text filter",
 			"textPlaceholder": "Search task titles or descriptions",

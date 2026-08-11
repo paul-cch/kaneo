@@ -7924,6 +7924,9 @@
 						"projects": {
 							"type": "string"
 						},
+						"projectTaskCount": {
+							"type": "string"
+						},
 						"noProjects": {
 							"type": "string"
 						},
@@ -8038,6 +8041,7 @@
 						"name",
 						"namePlaceholder",
 						"projects",
+						"projectTaskCount",
 						"noProjects",
 						"textFilter",
 						"textPlaceholder",

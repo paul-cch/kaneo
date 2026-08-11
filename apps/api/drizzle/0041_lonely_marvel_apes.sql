@@ -1,0 +1,1 @@
+CREATE INDEX "task_focus_text_search_idx" ON "task" USING gin (to_tsvector('simple', coalesce("title", '') || ' ' || coalesce("description", '')));

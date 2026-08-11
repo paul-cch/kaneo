@@ -1,11 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import WorkspaceLayout from "@/components/common/workspace-layout";
 import PageTitle from "@/components/page-title";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SavedViewRequestError } from "@/fetchers/saved-view/get-saved-view-tasks";
+import useGetSavedView from "@/hooks/queries/saved-view/use-get-saved-view";
 import useGetSavedViewTasks from "@/hooks/queries/saved-view/use-get-saved-view-tasks";
+import { useProjectWebSocket } from "@/hooks/use-project-websocket";
 import { formatDateMedium } from "@/lib/format";
 
 export const Route = createFileRoute(
@@ -14,9 +17,50 @@ export const Route = createFileRoute(
   component: RouteComponent,
 });
 
+type UnknownRecord = Record<string, unknown>;
+
+function projectIdsFromView(view: unknown): string[] {
+  if (!view || typeof view !== "object" || Array.isArray(view)) return [];
+  const filters = (view as UnknownRecord).filters;
+  if (!filters || typeof filters !== "object" || Array.isArray(filters)) {
+    return [];
+  }
+  const nested = (filters as UnknownRecord).filters;
+  const values =
+    nested && typeof nested === "object" && !Array.isArray(nested)
+      ? nested
+      : filters;
+  const projectIds = (values as UnknownRecord).projectIds;
+  if (!Array.isArray(projectIds)) return [];
+  return [
+    ...new Set(
+      projectIds.filter(
+        (projectId): projectId is string => typeof projectId === "string",
+      ),
+    ),
+  ];
+}
+
+function FocusProjectSocket({
+  projectId,
+  viewId,
+}: {
+  projectId: string;
+  viewId: string;
+}) {
+  const invalidateQueryKey = useMemo(
+    () => ["saved-view-tasks", viewId],
+    [viewId],
+  );
+  useProjectWebSocket(projectId, invalidateQueryKey);
+  return null;
+}
+
 function RouteComponent() {
   const { t } = useTranslation();
   const { viewId } = Route.useParams();
+  const { data: view } = useGetSavedView(viewId);
+  const projectIds = projectIdsFromView(view);
   const { data, error, isError, isLoading, refetch } =
     useGetSavedViewTasks(viewId);
   const items = data?.items ?? [];
@@ -44,6 +88,13 @@ function RouteComponent() {
     <>
       <PageTitle title={t("workspace:focus.pageTitle")} />
       <WorkspaceLayout title={t("workspace:focus.pageTitle")}>
+        {projectIds.map((projectId) => (
+          <FocusProjectSocket
+            key={projectId}
+            projectId={projectId}
+            viewId={viewId}
+          />
+        ))}
         {isLoading ? (
           <div className="p-6 text-muted-foreground" aria-busy="true">
             {t("workspace:focus.loading")}

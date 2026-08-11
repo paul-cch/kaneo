@@ -7,6 +7,7 @@ import {
   parseIntegrationInput,
   parseOutboxInput,
   parseProjectOperatorInput,
+  parseProposalInput,
   parseTriageAction,
   parseTriageConditions,
   parseTriageRuleInput,
@@ -93,14 +94,61 @@ describe("operator slice contracts", () => {
     ).toThrow(/payload/);
   });
 
+  it("requires a linked source and explicit proposal evidence", () => {
+    expect(
+      parseProposalInput({
+        source: "https://example.invalid/agent/1",
+        ownerUserId: "user-1",
+        dedupeKey: "proposal-1",
+        evidence: {
+          summary: "A bounded operator proposal",
+          links: ["https://example.invalid/evidence/1"],
+        },
+        requestedAction: {
+          type: "create-task",
+          description: "Ask the operator to review",
+          payload: { title: "Review" },
+        },
+      }),
+    ).toMatchObject({ source: "https://example.invalid/agent/1" });
+    expect(() =>
+      parseProposalInput({
+        source: "agent",
+        ownerUserId: "user-1",
+        dedupeKey: "proposal-2",
+        evidence: { summary: "Missing source link" },
+        requestedAction: { type: "review" },
+      }),
+    ).toThrow(/source/);
+    expect(() =>
+      parseProposalInput({
+        source: "https://example.invalid/agent/3",
+        ownerUserId: "user-1",
+        dedupeKey: "proposal-3",
+        evidence: {},
+        requestedAction: { type: "review" },
+      }),
+    ).toThrow(/summary/);
+  });
+
   it("normalizes one-way integration events", () => {
     expect(
       parseIntegrationEventInput({
         externalId: "evt-1",
+        externalIdentity: "external-user-1",
         payload: { title: "New" },
         cursor: "2",
       }),
-    ).toEqual({ externalId: "evt-1", payload: { title: "New" }, cursor: "2" });
+    ).toEqual({
+      externalId: "evt-1",
+      externalIdentity: "external-user-1",
+      payload: { title: "New" },
+      cursor: "2",
+    });
+    expect(parseIntegrationEventInput({ externalId: "evt-2" })).toEqual({
+      externalId: "evt-2",
+      payload: {},
+    });
   });
 
   it("rejects credentials at the one-way integration boundary", () => {
@@ -116,6 +164,13 @@ describe("operator slice contracts", () => {
         kind: "linear",
         displayName: "Linear mirror",
         config: { token: "redacted" },
+      }),
+    ).toThrow(/credentials/);
+    expect(() =>
+      parseIntegrationInput({
+        kind: "linear",
+        displayName: "Linear mirror",
+        config: { oauth: { refreshToken: "redacted" } },
       }),
     ).toThrow(/credentials/);
   });

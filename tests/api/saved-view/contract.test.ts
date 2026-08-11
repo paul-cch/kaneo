@@ -49,6 +49,57 @@ describe("saved-view contract", () => {
     ).toThrow(/duplicate/);
   });
 
+  it("rejects unsupported filter keys and duplicate sort fields", () => {
+    expect(() =>
+      normalizeSavedViewDefinition({
+        name: "Unknown",
+        filters: { projectIds: ["p1"], unsupported: true },
+      }),
+    ).toThrow(/unsupported/);
+
+    expect(() =>
+      normalizeSavedViewDefinition({
+        name: "Duplicate field",
+        filters: { projectIds: ["p1"] },
+        sort: [
+          { field: "title", direction: "asc" },
+          { field: "title", direction: "desc" },
+        ],
+      }),
+    ).toThrow(/duplicate fields/);
+
+    expect(() =>
+      normalizeSavedViewDefinition({
+        name: "No tie breaker room",
+        filters: { projectIds: ["p1"] },
+        sort: [
+          { field: "priority", direction: "desc" },
+          { field: "dueDate", direction: "asc" },
+          { field: "updatedAt", direction: "desc" },
+          { field: "title", direction: "asc" },
+        ],
+      }),
+    ).toThrow(/taskId/);
+  });
+
+  it("keeps the taskId tie-breaker last when four terms are supplied", () => {
+    const result = normalizeSavedViewDefinition({
+      name: "Stable",
+      filters: { projectIds: ["p1"] },
+      sort: [
+        { field: "taskId", direction: "asc" },
+        { field: "priority", direction: "desc" },
+        { field: "dueDate", direction: "asc" },
+      ],
+    });
+
+    expect(result.sort).toHaveLength(3);
+    expect(result.sort.at(-1)).toEqual({
+      field: "taskId",
+      direction: "asc",
+    });
+  });
+
   it("round-trips an opaque cursor", () => {
     const encoded = encodeSavedViewCursor({
       taskId: "task-1",

@@ -1,7 +1,9 @@
 import { createId } from "@paralleldrive/cuid2";
-import { and, asc, desc, eq, gte, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lte, ne } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 import db, { schema } from "../database";
+import { publishEvent } from "../events";
+import { assertValidTaskStatus } from "../task/validate-task-fields";
 
 const MAX_PAGE_SIZE = 100;
 const PROJECT_HEALTH = ["on-track", "at-risk", "off-track"] as const;
@@ -19,6 +21,11 @@ const TRIAGE_ACTIONS = [
   "assign_user",
   "add_label",
 ] as const;
+const ANALYTICS_QUESTIONS = {
+  workload: "How much work is in the selected window?",
+  aging: "How old is the work in the selected window?",
+  overdue: "How much work is overdue in the selected window?",
+} as const;
 
 type JsonObject = Record<string, unknown>;
 
@@ -112,6 +119,34 @@ function inValues<T extends readonly string[]>(
 ): T[number] {
   if (!values.includes(value)) badRequest(`${field} is invalid`);
   return value as T[number];
+}
+
+type OperatorIntegrationRow =
+  typeof schema.operatorIntegrationTable.$inferSelect;
+
+type OperatorIntegrationSummary = Omit<OperatorIntegrationRow, "config">;
+
+function integrationSummary(
+  integration: OperatorIntegrationRow,
+): OperatorIntegrationSummary {
+  const { config: _config, ...summary } = integration;
+  return summary;
+}
+
+function rejectCredentialKeys(value: unknown, path = "config"): void {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => {
+      rejectCredentialKeys(entry, `${path}[${index}]`);
+    });
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [key, child] of Object.entries(value)) {
+    if (/(token|secret|password|credential)/i.test(key)) {
+      badRequest("Integration credentials are not accepted in this phase");
+    }
+    rejectCredentialKeys(child, `${path}.${key}`);
+  }
 }
 
 async function assertWorkspaceUser(
@@ -341,6 +376,28 @@ export async function listCycles(workspaceId: string, limit?: number) {
       cycle.startsAt <= now &&
       cycle.endsAt >= now,
   }));
+}
+
+export async function getCurrentCycle(workspaceId: string) {
+  const now = new Date();
+  const [cycle] = await db
+    .select()
+    .from(schema.cycleTable)
+    .where(
+      and(
+        eq(schema.cycleTable.workspaceId, workspaceId),
+        ne(schema.cycleTable.status, "cancelled"),
+        lte(schema.cycleTable.startsAt, now),
+        gte(schema.cycleTable.endsAt, now),
+      ),
+    )
+    .orderBy(desc(schema.cycleTable.startsAt))
+    .limit(1);
+  if (!cycle) return { cycle: null, tasks: [] };
+  return {
+    cycle: { ...cycle, isCurrent: true },
+    tasks: await listCycleTasks(workspaceId, cycle.id),
+  };
 }
 
 export async function createCycle(workspaceId: string, input: unknown) {
@@ -899,7 +956,11 @@ export async function listTriageItems(workspaceId: string, limit?: number) {
     .limit(boundedLimit(limit));
 }
 
-export async function applyTriageItem(workspaceId: string, itemId: string) {
+export async function applyTriageItem(
+  workspaceId: string,
+  itemId: string,
+  currentUserId: string,
+) {
   const [item] = await db
     .select()
     .from(schema.triageItemTable)
@@ -916,13 +977,28 @@ export async function applyTriageItem(workspaceId: string, itemId: string) {
   const action = parseTriageAction(item.proposedAction);
   const taskUpdate: {
     status?: string;
+    columnId?: string | null;
     priority?: string;
     userId?: string | null;
     updatedAt: Date;
   } = {
     updatedAt: new Date(),
   };
-  if (action.type === "set_status") taskUpdate.status = action.value;
+  if (action.type === "set_status") {
+    await assertValidTaskStatus(action.value, task.projectId);
+    const [column] = await db
+      .select({ id: schema.columnTable.id })
+      .from(schema.columnTable)
+      .where(
+        and(
+          eq(schema.columnTable.projectId, task.projectId),
+          eq(schema.columnTable.slug, action.value),
+        ),
+      )
+      .limit(1);
+    taskUpdate.status = action.value;
+    taskUpdate.columnId = column?.id ?? null;
+  }
   if (action.type === "set_priority") {
     taskUpdate.priority = inValues(
       action.value,
@@ -965,20 +1041,70 @@ export async function applyTriageItem(workspaceId: string, itemId: string) {
       });
     }
   }
-  await db
+  const delivery = await enqueueOperatorEvent(
+    workspaceId,
+    {
+      eventType: "triage.item.apply",
+      aggregateType: "triage-item",
+      aggregateId: item.id,
+      idempotencyKey: `triage:${item.id}:apply`,
+      payload: { taskId: item.taskId, action },
+    },
+    currentUserId,
+  );
+  const [updatedTask] = await db
     .update(schema.taskTable)
     .set(taskUpdate)
-    .where(eq(schema.taskTable.id, task.id));
+    .where(eq(schema.taskTable.id, task.id))
+    .returning();
+  if (!updatedTask) notFound("Task not found");
   const [updated] = await db
     .update(schema.triageItemTable)
     .set({ status: "applied", appliedAt: new Date(), updatedAt: new Date() })
-    .where(eq(schema.triageItemTable.id, item.id))
+    .where(
+      and(
+        eq(schema.triageItemTable.id, item.id),
+        eq(schema.triageItemTable.workspaceId, workspaceId),
+        eq(schema.triageItemTable.status, "pending"),
+      ),
+    )
     .returning();
+  if (!updated) conflict("Triage item is no longer pending");
+  await recordJobAttempt(workspaceId, delivery.id, { status: "succeeded" });
+  if (task.status !== updatedTask.status) {
+    await publishEvent("task.status_changed", {
+      taskId: updatedTask.id,
+      projectId: updatedTask.projectId,
+      userId: currentUserId,
+      oldStatus: task.status,
+      newStatus: updatedTask.status,
+      title: updatedTask.title,
+      assigneeId: updatedTask.userId,
+      type: "status_changed",
+    });
+    await publishEvent("task-relation.refresh", {
+      projectId: updatedTask.projectId,
+      userId: currentUserId,
+    });
+  }
+  await publishEvent("task.updated", {
+    taskId: updatedTask.id,
+    projectId: updatedTask.projectId,
+    title: updatedTask.title,
+    status: updatedTask.status,
+    userId: currentUserId,
+  });
   return updated;
 }
 
 export async function analytics(workspaceId: string, input: unknown) {
   const body = asObject(input);
+  const question = inValues(
+    (stringField(body, "question", { optional: true }) as string | undefined) ??
+      "workload",
+    Object.keys(ANALYTICS_QUESTIONS) as (keyof typeof ANALYTICS_QUESTIONS)[],
+    "question",
+  );
   const since = dateField(body, "since", { optional: true });
   const until = dateField(body, "until", { optional: true });
   if (since && until && until < since) badRequest("until must be after since");
@@ -1023,6 +1149,7 @@ export async function analytics(workspaceId: string, input: unknown) {
     if (task.dueDate && task.dueDate < now) overdue += 1;
   }
   return {
+    question,
     window: { since: since ?? null, until: until ?? null },
     tasks: {
       total: tasks.length,
@@ -1037,6 +1164,7 @@ export async function analytics(workspaceId: string, input: unknown) {
       oldestTaskAgeHours,
     },
     definitions: {
+      question: ANALYTICS_QUESTIONS[question],
       total: "tasks created in the selected window",
       overdue: "tasks with dueDate before the request time",
       byStatus: "task.status grouped exactly as stored",
@@ -1048,14 +1176,60 @@ export async function analytics(workspaceId: string, input: unknown) {
   };
 }
 
+function requiredUrl(value: string, field: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    badRequest(`${field} must be an http(s) URL`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    badRequest(`${field} must be an http(s) URL`);
+  }
+  return value;
+}
+
 export function parseProposalInput(input: unknown) {
   const body = asObject(input);
-  const source = stringField(body, "source", { max: 120 }) as string;
+  const source = requiredUrl(
+    stringField(body, "source", { max: 500 }) as string,
+    "source",
+  );
   const ownerUserId = stringField(body, "ownerUserId", { max: 200 }) as string;
   const dedupeKey = stringField(body, "dedupeKey", { max: 240 }) as string;
-  const evidence = objectField(body, "evidence");
-  const requestedAction = objectField(body, "requestedAction");
-  return { source, ownerUserId, dedupeKey, evidence, requestedAction };
+  const rawEvidence = objectField(body, "evidence");
+  const summary = stringField(rawEvidence, "summary", { max: 5000 });
+  const rawLinks = rawEvidence.links;
+  if (rawLinks !== undefined && !Array.isArray(rawLinks)) {
+    badRequest("evidence.links must be an array");
+  }
+  const links = (rawLinks ?? []).map((link, index) =>
+    requiredUrl(
+      typeof link === "string"
+        ? link.trim()
+        : badRequest(`evidence.links[${index}] must be a URL`),
+      `evidence.links[${index}]`,
+    ),
+  );
+  const rawAction = objectField(body, "requestedAction");
+  const type = stringField(rawAction, "type", { max: 120 }) as string;
+  const description = stringField(rawAction, "description", {
+    optional: true,
+    max: 2000,
+  });
+  const payload =
+    rawAction.payload === undefined ? {} : objectField(rawAction, "payload");
+  return {
+    source,
+    ownerUserId,
+    dedupeKey,
+    evidence: { summary, ...(links.length > 0 ? { links } : {}) },
+    requestedAction: {
+      type,
+      ...(description === undefined ? {} : { description }),
+      payload,
+    },
+  };
 }
 
 export async function createProposal(workspaceId: string, input: unknown) {
@@ -1071,7 +1245,25 @@ export async function createProposal(workspaceId: string, input: unknown) {
       ],
     })
     .returning();
-  if (created) return created;
+  if (created) {
+    const delivery = await enqueueOperatorEvent(
+      workspaceId,
+      {
+        eventType: "proposal.received",
+        aggregateType: "proposal",
+        aggregateId: created.id,
+        idempotencyKey: `proposal:${workspaceId}:${created.dedupeKey}`,
+        payload: {
+          proposalId: created.id,
+          source: created.source,
+          requestedAction: created.requestedAction,
+        },
+      },
+      created.ownerUserId,
+    );
+    await recordJobAttempt(workspaceId, delivery.id, { status: "succeeded" });
+    return created;
+  }
   const [existing] = await db
     .select()
     .from(schema.operatorProposalTable)
@@ -1141,11 +1333,7 @@ export function parseIntegrationInput(input: unknown) {
     "status",
   );
   const config = body.config === undefined ? {} : objectField(body, "config");
-  for (const key of Object.keys(config)) {
-    if (/(token|secret|password|credential)/i.test(key)) {
-      badRequest("Integration credentials are not accepted in this phase");
-    }
-  }
+  rejectCredentialKeys(config);
   return { kind, displayName, status, config };
 }
 
@@ -1161,7 +1349,7 @@ export async function createIntegration(workspaceId: string, input: unknown) {
       ],
     })
     .returning();
-  if (created) return created;
+  if (created) return integrationSummary(created);
   const [existing] = await db
     .select()
     .from(schema.operatorIntegrationTable)
@@ -1173,16 +1361,17 @@ export async function createIntegration(workspaceId: string, input: unknown) {
     )
     .limit(1);
   if (!existing) conflict("Integration kind was concurrently claimed");
-  return existing;
+  return integrationSummary(existing);
 }
 
 export async function listIntegrations(workspaceId: string, limit?: number) {
-  return db
+  const rows = await db
     .select()
     .from(schema.operatorIntegrationTable)
     .where(eq(schema.operatorIntegrationTable.workspaceId, workspaceId))
     .orderBy(asc(schema.operatorIntegrationTable.createdAt))
     .limit(boundedLimit(limit));
+  return rows.map(integrationSummary);
 }
 
 export function parseIntegrationEventInput(input: unknown) {
@@ -1195,7 +1384,16 @@ export function parseIntegrationEventInput(input: unknown) {
     nullable: true,
     max: 500,
   });
-  return { externalId, payload, cursor: cursor ?? null };
+  const externalIdentity = stringField(body, "externalIdentity", {
+    optional: true,
+    max: 240,
+  });
+  return {
+    externalId,
+    payload,
+    ...(cursor === undefined ? {} : { cursor }),
+    ...(externalIdentity === undefined ? {} : { externalIdentity }),
+  };
 }
 
 export async function ingestIntegrationEvent(
@@ -1210,6 +1408,23 @@ export async function ingestIntegrationEvent(
   }
   const parsed = parseIntegrationEventInput(input);
   const idempotencyKey = `integration:${integrationId}:${parsed.externalId}`;
+  let localUserId: string | null = null;
+  if (parsed.externalIdentity) {
+    const [mapping] = await db
+      .select({ localUserId: schema.operatorIdentityMapTable.localUserId })
+      .from(schema.operatorIdentityMapTable)
+      .where(
+        and(
+          eq(schema.operatorIdentityMapTable.integrationId, integrationId),
+          eq(
+            schema.operatorIdentityMapTable.externalIdentity,
+            parsed.externalIdentity,
+          ),
+        ),
+      )
+      .limit(1);
+    localUserId = mapping?.localUserId ?? null;
+  }
   const [existing] = await db
     .select({ id: schema.operatorOutboxTable.id })
     .from(schema.operatorOutboxTable)
@@ -1227,11 +1442,18 @@ export async function ingestIntegrationEvent(
       aggregateType: "integration",
       aggregateId: integration.id,
       idempotencyKey,
-      payload: { ...parsed.payload, externalId: parsed.externalId },
+      payload: {
+        ...parsed.payload,
+        externalId: parsed.externalId,
+        ...(parsed.externalIdentity
+          ? { externalIdentity: parsed.externalIdentity }
+          : {}),
+        ...(localUserId ? { localUserId } : {}),
+      },
     },
     replayOwnerUserId,
   );
-  if (parsed.cursor !== null) {
+  if (parsed.cursor !== undefined) {
     await db
       .update(schema.operatorIntegrationTable)
       .set({ cursor: parsed.cursor, updatedAt: new Date() })
@@ -1242,7 +1464,8 @@ export async function ingestIntegrationEvent(
     externalId: parsed.externalId,
     eventId: event.id,
     deduplicated: Boolean(existing),
-    cursor: parsed.cursor ?? integration.cursor,
+    localUserId,
+    cursor: parsed.cursor === undefined ? integration.cursor : parsed.cursor,
   };
 }
 
@@ -1268,7 +1491,7 @@ export async function updateIntegrationCursor(
     )
     .returning();
   if (!updated) notFound("Integration not found");
-  return updated;
+  return integrationSummary(updated);
 }
 
 export async function listIdentityMaps(
@@ -1318,6 +1541,7 @@ export async function upsertIdentityMap(
   }) as string;
   const metadata =
     body.metadata === undefined ? {} : objectField(body, "metadata");
+  rejectCredentialKeys(metadata, "metadata");
   await assertWorkspaceUser(workspaceId, localUserId);
   const [mapped] = await db
     .insert(schema.operatorIdentityMapTable)

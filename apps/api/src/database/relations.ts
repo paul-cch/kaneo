@@ -104,7 +104,6 @@ export const projectTableRelations = relations(
       fields: [projectTable.workspaceId],
       references: [workspaceTable.id],
     }),
-    savedViews: many(savedViewTable),
     tasks: many(taskTable),
     assets: many(assetTable),
     columns: many(columnTable),

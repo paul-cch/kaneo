@@ -94,15 +94,18 @@ export function registerTools(
       description: "List personal saved views in a workspace.",
       inputSchema: z.object({
         workspaceId: nonEmptyString.describe("Workspace ID"),
+        limit: z.number().int().min(1).max(100).optional(),
       }),
     },
-    async (args) =>
-      run(() =>
+    async (args) => {
+      const query = args.limit === undefined ? "" : `?limit=${args.limit}`;
+      return run(() =>
         client.json(
-          `/api/workspace/${encodeURIComponent(args.workspaceId)}/saved-views`,
+          `/api/workspace/${encodeURIComponent(args.workspaceId)}/saved-views${query}`,
           { method: "GET" },
         ),
-      ),
+      );
+    },
   );
 
   server.registerTool(

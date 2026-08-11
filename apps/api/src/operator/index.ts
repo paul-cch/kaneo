@@ -13,6 +13,7 @@ import {
   createTriageRule,
   enqueueOperatorEvent,
   enqueueTriageItem,
+  getCurrentCycle,
   getOperatorEvent,
   getProjectOperator,
   ingestIntegrationEvent,
@@ -116,6 +117,12 @@ const operator = new Hono<{ Variables: RouteVariables }>()
       c.json(
         await listCycles(c.get("workspaceId"), c.req.valid("query").limit),
       ),
+  )
+  .get(
+    "/workspace/:workspaceId/cycles/current",
+    validator("param", v.object({ workspaceId: v.string() })),
+    workspaceAccess.fromParam(),
+    async (c) => c.json(await getCurrentCycle(c.get("workspaceId"))),
   )
   .post(
     "/workspace/:workspaceId/cycles",
@@ -304,7 +311,11 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     workspaceAccess.fromParam(),
     async (c) =>
       c.json(
-        await applyTriageItem(c.get("workspaceId"), c.req.param("itemId")),
+        await applyTriageItem(
+          c.get("workspaceId"),
+          c.req.param("itemId"),
+          c.get("userId"),
+        ),
       ),
   )
   .post(

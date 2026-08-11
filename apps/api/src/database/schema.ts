@@ -443,6 +443,10 @@ export const taskTable = pgTable(
     index("task_dueDate_idx").on(table.dueDate),
     index("task_assigneeId_idx").on(table.userId),
     index("task_columnId_idx").on(table.columnId),
+    index("task_focus_text_search_idx").using(
+      "gin",
+      sql`to_tsvector('simple', coalesce(${table.title}, '') || ' ' || coalesce(${table.description}, ''))`,
+    ),
     unique("task_project_number_unique").on(table.projectId, table.number),
   ],
 );
