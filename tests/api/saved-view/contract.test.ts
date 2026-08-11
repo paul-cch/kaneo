@@ -50,11 +50,16 @@ describe("saved-view contract", () => {
   });
 
   it("round-trips an opaque cursor", () => {
-    const encoded = encodeSavedViewCursor({ taskId: "task-1", position: 3 });
+    const encoded = encodeSavedViewCursor({
+      taskId: "task-1",
+      position: 3,
+      sortValues: [4, null, 1000, "task-1"],
+    });
     expect(encoded).not.toContain("task-1");
     expect(decodeSavedViewCursor(encoded)).toEqual({
       taskId: "task-1",
       position: 3,
+      sortValues: [4, null, 1000, "task-1"],
     });
   });
 });

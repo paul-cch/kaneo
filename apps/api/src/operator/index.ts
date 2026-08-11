@@ -15,6 +15,7 @@ import {
   enqueueTriageItem,
   getOperatorEvent,
   getProjectOperator,
+  ingestIntegrationEvent,
   listCycles,
   listCycleTasks,
   listIdentityMaps,
@@ -194,7 +195,11 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     workspaceAccess.fromParam(),
     async (c) =>
       c.json(
-        await enqueueOperatorEvent(c.get("workspaceId"), c.req.valid("json")),
+        await enqueueOperatorEvent(
+          c.get("workspaceId"),
+          c.req.valid("json"),
+          c.get("userId"),
+        ),
         201,
       ),
   )
@@ -237,7 +242,11 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     workspaceAccess.fromParam(),
     async (c) =>
       c.json(
-        await replayOperatorEvent(c.get("workspaceId"), c.req.param("eventId")),
+        await replayOperatorEvent(
+          c.get("workspaceId"),
+          c.req.param("eventId"),
+          c.get("userId"),
+        ),
       ),
   )
   .get(
@@ -366,6 +375,25 @@ const operator = new Hono<{ Variables: RouteVariables }>()
     async (c) =>
       c.json(
         await createIntegration(c.get("workspaceId"), c.req.valid("json")),
+        201,
+      ),
+  )
+  .post(
+    "/workspace/:workspaceId/integrations/:integrationId/events",
+    validator(
+      "param",
+      v.object({ workspaceId: v.string(), integrationId: v.string() }),
+    ),
+    validator("json", unknownJson),
+    workspaceAccess.fromParam(),
+    async (c) =>
+      c.json(
+        await ingestIntegrationEvent(
+          c.get("workspaceId"),
+          c.req.param("integrationId"),
+          c.get("userId"),
+          c.req.valid("json"),
+        ),
         201,
       ),
   )

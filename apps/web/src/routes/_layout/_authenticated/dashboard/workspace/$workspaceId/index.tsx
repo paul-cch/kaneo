@@ -18,7 +18,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { LayoutGrid, Plus } from "lucide-react";
 import {
   type CSSProperties,
@@ -31,6 +31,7 @@ import { useTranslation } from "react-i18next";
 import WorkspaceLayout from "@/components/common/workspace-layout";
 import PageTitle from "@/components/page-title";
 import CreateProjectModal from "@/components/shared/modals/create-project-modal";
+import CreateSavedViewModal from "@/components/shared/modals/create-saved-view-modal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -55,6 +56,7 @@ import icons from "@/constants/project-icons";
 import { shortcuts } from "@/constants/shortcuts";
 import useReorderProjects from "@/hooks/mutations/project/use-reorder-projects";
 import useGetProjects from "@/hooks/queries/project/use-get-projects";
+import useGetSavedViews from "@/hooks/queries/saved-view/use-get-saved-views";
 import { useRegisterShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useWorkspacePermission } from "@/hooks/use-workspace-permission";
 import { formatDateMedium } from "@/lib/format";
@@ -124,11 +126,13 @@ function SortableProjectRow({
 function RouteComponent() {
   const { t } = useTranslation();
   const [isCreateProjectOpen, setIsCreateProjectOpen] = useState(false);
+  const [isCreateSavedViewOpen, setIsCreateSavedViewOpen] = useState(false);
   const { workspaceId } = Route.useParams();
   const navigate = useNavigate();
   const { data: projects, isLoading } = useGetProjects({
     workspaceId,
   });
+  const { data: savedViews } = useGetSavedViews(workspaceId);
   const reorderProjects = useReorderProjects();
 
   // React state, not the query cache: dnd-kit clears its transforms with a
@@ -346,19 +350,80 @@ function RouteComponent() {
       <WorkspaceLayout
         title={t("workspace:projects.pageTitle")}
         headerActions={
-          canCreate ? (
+          <div className="flex items-center gap-2">
+            {savedViews?.[0] ? (
+              <Link
+                to="/dashboard/workspace/$workspaceId/focus/$viewId"
+                params={{ workspaceId, viewId: savedViews[0].id }}
+              >
+                <Button variant="ghost" size="xs">
+                  {t("workspace:focus.open")}
+                </Button>
+              </Link>
+            ) : null}
             <Button
               variant="outline"
               size="xs"
-              onClick={handleCreateProject}
+              onClick={() => setIsCreateSavedViewOpen(true)}
               className="gap-1"
             >
-              <Plus className="w-3 h-3" />
-              {t("workspace:projects.createProject")}
+              {t("workspace:focus.newView")}
             </Button>
-          ) : null
+            {canCreate ? (
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={handleCreateProject}
+                className="gap-1"
+              >
+                <Plus className="w-3 h-3" />
+                {t("workspace:projects.createProject")}
+              </Button>
+            ) : null}
+          </div>
         }
       >
+        {savedViews && savedViews.length > 0 ? (
+          <div className="mb-6 rounded-md border p-4" data-kaneo-focus-list="">
+            <h2 className="mb-3 text-sm font-semibold">
+              {t("workspace:focus.pageTitle")}
+            </h2>
+            <div className="flex flex-wrap gap-2">
+              {savedViews.map((view) => (
+                <Link
+                  key={view.id}
+                  to="/dashboard/workspace/$workspaceId/focus/$viewId"
+                  params={{ workspaceId, viewId: view.id }}
+                >
+                  <Button variant="secondary" size="sm">
+                    {view.name}
+                  </Button>
+                </Link>
+              ))}
+            </div>
+          </div>
+        ) : savedViews ? (
+          <div
+            className="mb-6 flex items-center justify-between gap-4 rounded-md border border-dashed p-4"
+            data-kaneo-focus-unsaved-state=""
+          >
+            <div>
+              <h2 className="text-sm font-semibold">
+                {t("workspace:focus.pageTitle")}
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                {t("workspace:focus.noViews")}
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsCreateSavedViewOpen(true)}
+            >
+              {t("workspace:focus.newView")}
+            </Button>
+          </div>
+        ) : null}
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -459,6 +524,11 @@ function RouteComponent() {
       <CreateProjectModal
         open={isCreateProjectOpen}
         onClose={() => setIsCreateProjectOpen(false)}
+      />
+      <CreateSavedViewModal
+        open={isCreateSavedViewOpen}
+        workspaceId={workspaceId}
+        onClose={() => setIsCreateSavedViewOpen(false)}
       />
     </>
   );

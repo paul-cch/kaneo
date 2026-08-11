@@ -7,6 +7,7 @@ import {
   normalizeSavedViewDefinition,
   SAVED_VIEW_MAX_PAGE_SIZE,
   type SavedViewCursor,
+  type SavedViewCursorValue,
   type SavedViewDefinition,
   type SavedViewFilterValues,
   type SavedViewSortTerm,
@@ -34,6 +35,7 @@ export type SavedViewTask = {
   status: string;
   priority: string;
   dueDate: Date | null;
+  createdAt: Date;
   updatedAt: Date;
   project: { id: string; name: string; slug: string };
   assignee: { id: string; name: string } | null;
@@ -342,40 +344,35 @@ const priorityRank: Record<string, number> = {
   urgent: 4,
 };
 
-function compareValues(
-  a: TaskRow,
-  b: TaskRow,
+function sortValue(
+  task: Pick<
+    TaskRow,
+    "id" | "priority" | "dueDate" | "updatedAt" | "createdAt" | "title"
+  >,
+  field: SavedViewSortTerm["field"],
+): SavedViewCursorValue {
+  switch (field) {
+    case "priority":
+      return priorityRank[task.priority ?? "no-priority"] ?? 0;
+    case "dueDate":
+      return task.dueDate?.getTime() ?? null;
+    case "updatedAt":
+      return task.updatedAt.getTime();
+    case "createdAt":
+      return task.createdAt.getTime();
+    case "title":
+      return task.title.toLocaleLowerCase();
+    case "taskId":
+      return task.id;
+  }
+}
+
+function compareSortValues(
+  left: SavedViewCursorValue,
+  right: SavedViewCursorValue,
   term: SavedViewSortTerm,
 ): number {
   const direction = term.direction === "asc" ? 1 : -1;
-  let left: string | number | null = null;
-  let right: string | number | null = null;
-  switch (term.field) {
-    case "priority":
-      left = priorityRank[a.priority ?? "no-priority"] ?? 0;
-      right = priorityRank[b.priority ?? "no-priority"] ?? 0;
-      break;
-    case "dueDate":
-      left = a.dueDate?.getTime() ?? null;
-      right = b.dueDate?.getTime() ?? null;
-      break;
-    case "updatedAt":
-      left = a.updatedAt.getTime();
-      right = b.updatedAt.getTime();
-      break;
-    case "createdAt":
-      left = a.createdAt.getTime();
-      right = b.createdAt.getTime();
-      break;
-    case "title":
-      left = a.title.toLocaleLowerCase();
-      right = b.title.toLocaleLowerCase();
-      break;
-    case "taskId":
-      left = a.id;
-      right = b.id;
-      break;
-  }
   if (left === null || right === null) {
     if (left === right) return 0;
     const nullsLast = term.nulls !== "first";
@@ -383,6 +380,18 @@ function compareValues(
   }
   if (left === right) return 0;
   return (left < right ? -1 : 1) * direction;
+}
+
+function compareValues(
+  a: TaskRow,
+  b: TaskRow,
+  term: SavedViewSortTerm,
+): number {
+  return compareSortValues(
+    sortValue(a, term.field),
+    sortValue(b, term.field),
+    term,
+  );
 }
 
 function isDueMatch(
@@ -505,6 +514,7 @@ async function queryTasks(
     status: row.status,
     priority: row.priority ?? "no-priority",
     dueDate: row.dueDate,
+    createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     project: {
       id: row.projectId,
@@ -546,8 +556,23 @@ export async function runFocusQuery(
   const items = await queryTasks(workspaceId, definition);
   let start = 0;
   if (cursor) {
-    const index = items.findIndex((item) => item.id === cursor.taskId);
-    start = index < 0 ? cursor.position + 1 : index + 1;
+    if (cursor.sortValues?.length === definition.sort.length) {
+      const index = items.findIndex((item) => {
+        for (const [position, term] of definition.sort.entries()) {
+          const result = compareSortValues(
+            sortValue(item, term.field),
+            cursor.sortValues?.[position] ?? null,
+            term,
+          );
+          if (result !== 0) return result > 0;
+        }
+        return item.id.localeCompare(cursor.taskId) > 0;
+      });
+      start = index < 0 ? items.length : index;
+    } else {
+      const index = items.findIndex((item) => item.id === cursor.taskId);
+      start = index < 0 ? cursor.position + 1 : index + 1;
+    }
   }
   const page = items.slice(start, start + safeLimit);
   const last = page.at(-1);
@@ -556,6 +581,9 @@ export async function runFocusQuery(
       ? encodeSavedViewCursor({
           taskId: last.id,
           position: start + page.length - 1,
+          sortValues: definition.sort.map((term) =>
+            sortValue(last, term.field),
+          ),
         })
       : null;
   return { items: page, nextCursor };

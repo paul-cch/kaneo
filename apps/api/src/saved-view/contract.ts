@@ -70,9 +70,12 @@ export type SavedViewInput = {
   updatedAt?: string;
 };
 
+export type SavedViewCursorValue = string | number | null;
+
 export type SavedViewCursor = {
   taskId: string;
   position: number;
+  sortValues?: SavedViewCursorValue[];
 };
 
 const DEFAULT_SORT: SavedViewSortTerm[] = [
@@ -277,7 +280,26 @@ export function decodeSavedViewCursor(
     ) {
       throw new Error("invalid cursor");
     }
-    return { taskId: parsed.taskId, position: parsed.position };
+    const sortValues = parsed.sortValues;
+    if (sortValues !== undefined) {
+      if (
+        !Array.isArray(sortValues) ||
+        sortValues.length > 4 ||
+        sortValues.some(
+          (entry) =>
+            entry !== null &&
+            ((typeof entry !== "string" && typeof entry !== "number") ||
+              (typeof entry === "number" && !Number.isFinite(entry))),
+        )
+      ) {
+        throw new Error("invalid cursor sort values");
+      }
+    }
+    return {
+      taskId: parsed.taskId,
+      position: parsed.position,
+      ...(sortValues === undefined ? {} : { sortValues }),
+    };
   } catch {
     throw new HTTPException(400, { message: "Invalid saved view cursor" });
   }

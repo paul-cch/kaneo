@@ -1085,6 +1085,7 @@ export const cycleTable = pgTable(
     startsAt: timestamp("starts_at", { mode: "date" }).notNull(),
     endsAt: timestamp("ends_at", { mode: "date" }).notNull(),
     status: text("status").notNull().default("planned"),
+    rolloverPolicy: text("rollover_policy").notNull().default("manual"),
     createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { mode: "date" })
       .defaultNow()
@@ -1140,6 +1141,13 @@ export const operatorOutboxTable = pgTable(
     idempotencyKey: text("idempotency_key").notNull(),
     payload: jsonb("payload").notNull(),
     status: text("status").notNull().default("pending"),
+    maxAttempts: integer("max_attempts").notNull().default(3),
+    replayOwnerUserId: text("replay_owner_user_id").references(
+      () => userTable.id,
+      {
+        onDelete: "set null",
+      },
+    ),
     availableAt: timestamp("available_at", { mode: "date" })
       .defaultNow()
       .notNull(),

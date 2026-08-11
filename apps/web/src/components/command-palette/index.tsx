@@ -118,12 +118,17 @@ function CommandPalette() {
           },
           {
             value: "focus",
-            label: t("navigation:commandPalette.focus", {
-              defaultValue: "Operator focus",
-            }),
+            label: t("workspace:focus.pageTitle"),
             onRun: () => {
               const view = savedViews?.[0];
-              if (!workspace?.id || !view?.id) return;
+              if (!workspace?.id) return;
+              if (!view?.id) {
+                navigate({
+                  to: "/dashboard/workspace/$workspaceId",
+                  params: { workspaceId: workspace.id },
+                });
+                return;
+              }
               navigate({
                 to: "/dashboard/workspace/$workspaceId/focus/$viewId",
                 params: { workspaceId: workspace.id, viewId: view.id },

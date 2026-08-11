@@ -227,7 +227,6 @@ export async function getProjectOperator(
     targetDate: project.targetDate,
     status: project.status,
     health: project.health,
-    updatedAt: project.createdAt,
   };
 }
 
@@ -245,8 +244,7 @@ export async function updateProjectOperator(
     targetDate?: Date | null;
     status?: string;
     health?: string;
-    updatedAt: Date;
-  } = { updatedAt: new Date() };
+  } = {};
   if ("leadUserId" in parsed) values.leadUserId = parsed.leadUserId;
   if ("targetDate" in parsed) values.targetDate = parsed.targetDate;
   if (parsed.status) values.status = parsed.status;
@@ -312,13 +310,20 @@ export function parseCycleInput(input: unknown) {
   const startsAt = dateField(body, "startsAt") as Date;
   const endsAt = dateField(body, "endsAt") as Date;
   if (endsAt <= startsAt) badRequest("endsAt must be after startsAt");
+  const rolloverPolicy = inValues(
+    (stringField(body, "rolloverPolicy", { optional: true }) as
+      | string
+      | undefined) ?? "manual",
+    ["manual", "carry-over"] as const,
+    "rolloverPolicy",
+  );
   const status = inValues(
     (stringField(body, "status", { optional: true }) as string | undefined) ??
       "planned",
     ["planned", "active", "completed", "cancelled"] as const,
     "status",
   );
-  return { name, startsAt, endsAt, status };
+  return { name, startsAt, endsAt, status, rolloverPolicy };
 }
 
 export async function listCycles(workspaceId: string, limit?: number) {
@@ -447,17 +452,29 @@ export function parseOutboxInput(input: unknown) {
   }) as string;
   const payload =
     body.payload === undefined ? {} : asObject(body.payload, "payload");
-  return { eventType, aggregateType, aggregateId, idempotencyKey, payload };
+  const maxAttempts = numberField(body, "maxAttempts", 3);
+  if (maxAttempts < 1 || maxAttempts > 5) {
+    badRequest("maxAttempts must be between 1 and 5");
+  }
+  return {
+    eventType,
+    aggregateType,
+    aggregateId,
+    idempotencyKey,
+    payload,
+    maxAttempts,
+  };
 }
 
 export async function enqueueOperatorEvent(
   workspaceId: string,
   input: unknown,
+  replayOwnerUserId: string,
 ) {
   const parsed = parseOutboxInput(input);
   const [created] = await db
     .insert(schema.operatorOutboxTable)
-    .values({ id: createId(), workspaceId, ...parsed })
+    .values({ id: createId(), workspaceId, replayOwnerUserId, ...parsed })
     .onConflictDoNothing({
       target: [
         schema.operatorOutboxTable.workspaceId,
@@ -555,15 +572,27 @@ export async function recordJobAttempt(
       error,
     })
     .returning();
+  const exhausted = status === "failed" && attempt >= event.maxAttempts;
   const nextStatus =
     status === "succeeded"
       ? "completed"
       : status === "failed"
-        ? "failed"
+        ? exhausted
+          ? "failed"
+          : "pending"
         : "running";
+  const retryDelayMs =
+    status === "failed" && !exhausted
+      ? Math.min(60_000, 1_000 * 2 ** (attempt - 1))
+      : 0;
   await db
     .update(schema.operatorOutboxTable)
-    .set({ status: nextStatus, lastError: error, updatedAt: new Date() })
+    .set({
+      status: nextStatus,
+      availableAt: new Date(Date.now() + retryDelayMs),
+      lastError: error,
+      updatedAt: new Date(),
+    })
     .where(eq(schema.operatorOutboxTable.id, event.id));
   return { eventId: event.id, attempt: created };
 }
@@ -571,6 +600,7 @@ export async function recordJobAttempt(
 export async function replayOperatorEvent(
   workspaceId: string,
   eventId: string,
+  replayOwnerUserId: string,
 ) {
   const [event] = await db
     .select()
@@ -579,6 +609,7 @@ export async function replayOperatorEvent(
       and(
         eq(schema.operatorOutboxTable.id, eventId),
         eq(schema.operatorOutboxTable.workspaceId, workspaceId),
+        eq(schema.operatorOutboxTable.replayOwnerUserId, replayOwnerUserId),
       ),
     )
     .limit(1);
@@ -625,12 +656,104 @@ export function parseTriageAction(input: unknown) {
   return { type, value: value.trim() };
 }
 
+export type TriageConditions = {
+  status?: string[];
+  priority?: string[];
+  projectId?: string[];
+  assigneeId?: string[];
+  labelId?: string[];
+  titleIncludes?: string;
+};
+
+function conditionValues(
+  body: JsonObject,
+  field: string,
+): string[] | undefined {
+  const value = body[field];
+  if (value === undefined) return undefined;
+  const values = Array.isArray(value) ? value : [value];
+  if (
+    values.length === 0 ||
+    values.length > 20 ||
+    values.some((entry) => typeof entry !== "string" || entry.trim() === "")
+  ) {
+    badRequest(`conditions.${field} must contain between 1 and 20 strings`);
+  }
+  return values.map((entry) => (entry as string).trim());
+}
+
+export function parseTriageConditions(input: unknown): TriageConditions {
+  const body = asObject(input, "conditions");
+  const allowed = new Set([
+    "status",
+    "priority",
+    "projectId",
+    "assigneeId",
+    "labelId",
+    "titleIncludes",
+  ]);
+  for (const key of Object.keys(body)) {
+    if (!allowed.has(key)) badRequest(`conditions.${key} is unsupported`);
+  }
+  const titleIncludes = body.titleIncludes;
+  if (titleIncludes !== undefined && typeof titleIncludes !== "string") {
+    badRequest("conditions.titleIncludes must be a string");
+  }
+  const normalizedTitle =
+    typeof titleIncludes === "string" ? titleIncludes.trim() : undefined;
+  if (normalizedTitle !== undefined && normalizedTitle.length > 120) {
+    badRequest("conditions.titleIncludes is too long");
+  }
+  const status = conditionValues(body, "status");
+  const priority = conditionValues(body, "priority");
+  const projectId = conditionValues(body, "projectId");
+  const assigneeId = conditionValues(body, "assigneeId");
+  const labelId = conditionValues(body, "labelId");
+  return {
+    ...(status ? { status } : {}),
+    ...(priority ? { priority } : {}),
+    ...(projectId ? { projectId } : {}),
+    ...(assigneeId ? { assigneeId } : {}),
+    ...(labelId ? { labelId } : {}),
+    ...(normalizedTitle ? { titleIncludes: normalizedTitle } : {}),
+  };
+}
+
+type TriageTask = {
+  status: string;
+  priority: string | null;
+  projectId: string;
+  userId: string | null;
+  title: string;
+  labelIds: string[];
+};
+
+export function matchesTriageConditions(
+  task: TriageTask,
+  conditions: TriageConditions,
+): boolean {
+  const matches = (values: string[] | undefined, value: string | null) =>
+    values === undefined || (value !== null && values.includes(value));
+  return (
+    matches(conditions.status, task.status) &&
+    matches(conditions.priority, task.priority) &&
+    matches(conditions.projectId, task.projectId) &&
+    matches(conditions.assigneeId, task.userId) &&
+    (conditions.labelId === undefined ||
+      conditions.labelId.some((labelId) => task.labelIds.includes(labelId))) &&
+    (conditions.titleIncludes === undefined ||
+      task.title
+        .toLocaleLowerCase()
+        .includes(conditions.titleIncludes.toLocaleLowerCase()))
+  );
+}
+
 export function parseTriageRuleInput(input: unknown) {
   const body = asObject(input);
   const name = stringField(body, "name", { max: 120 }) as string;
   const priority = numberField(body, "priority", 0);
   const enabled = boolField(body, "enabled", true);
-  const conditions = objectField(body, "conditions");
+  const conditions = parseTriageConditions(body.conditions);
   const action = parseTriageAction(body.action);
   return { name, priority, enabled, conditions, action };
 }
@@ -678,29 +801,82 @@ export async function createTriageRule(
 export async function enqueueTriageItem(workspaceId: string, input: unknown) {
   const body = asObject(input);
   const taskId = stringField(body, "taskId") as string;
-  await assertTaskWorkspace(workspaceId, taskId);
-  const ruleId = stringField(body, "ruleId", { optional: true });
-  if (ruleId) {
+  const task = await assertTaskWorkspace(workspaceId, taskId);
+  const labels = await db
+    .select({ id: schema.labelTable.id })
+    .from(schema.labelTable)
+    .where(eq(schema.labelTable.taskId, taskId));
+  const triageTask: TriageTask = {
+    status: task.status,
+    priority: task.priority,
+    projectId: task.projectId,
+    userId: task.userId,
+    title: task.title,
+    labelIds: labels.map((label) => label.id),
+  };
+  const requestedRuleId = stringField(body, "ruleId", { optional: true });
+  const suppliedAction =
+    body.proposedAction === undefined
+      ? undefined
+      : parseTriageAction(body.proposedAction);
+  let selectedRule: typeof schema.triageRuleTable.$inferSelect | undefined;
+  if (requestedRuleId) {
     const [rule] = await db
-      .select({ id: schema.triageRuleTable.id })
+      .select()
       .from(schema.triageRuleTable)
       .where(
         and(
-          eq(schema.triageRuleTable.id, ruleId),
+          eq(schema.triageRuleTable.id, requestedRuleId),
           eq(schema.triageRuleTable.workspaceId, workspaceId),
         ),
       )
       .limit(1);
     if (!rule) notFound("Triage rule not found");
+    selectedRule = rule;
+  } else if (suppliedAction === undefined) {
+    const rules = await db
+      .select()
+      .from(schema.triageRuleTable)
+      .where(
+        and(
+          eq(schema.triageRuleTable.workspaceId, workspaceId),
+          eq(schema.triageRuleTable.enabled, true),
+        ),
+      )
+      .orderBy(
+        asc(schema.triageRuleTable.priority),
+        asc(schema.triageRuleTable.createdAt),
+      );
+    selectedRule = rules.find((rule) =>
+      matchesTriageConditions(
+        triageTask,
+        parseTriageConditions(rule.conditions),
+      ),
+    );
+    if (!selectedRule) badRequest("No enabled triage rule matched task");
   }
-  const proposedAction = parseTriageAction(body.proposedAction);
+  if (selectedRule) {
+    if (!selectedRule.enabled) conflict("Triage rule is disabled");
+    if (
+      !matchesTriageConditions(
+        triageTask,
+        parseTriageConditions(selectedRule.conditions),
+      )
+    ) {
+      conflict("Triage rule does not match task");
+    }
+  }
+  const proposedAction = selectedRule
+    ? parseTriageAction(selectedRule.action)
+    : suppliedAction;
+  if (!proposedAction) badRequest("proposedAction is required without a rule");
   const [created] = await db
     .insert(schema.triageItemTable)
     .values({
       id: createId(),
       workspaceId,
       taskId,
-      ruleId: ruleId ?? null,
+      ruleId: selectedRule?.id ?? null,
       source:
         stringField(body, "source", { optional: true, max: 80 }) ?? "native",
       proposedAction,
@@ -830,7 +1006,15 @@ export async function analytics(workspaceId: string, input: unknown) {
   const projectHealthCounts: Record<string, number> = {};
   const now = new Date();
   let overdue = 0;
+  let ageHoursTotal = 0;
+  let oldestTaskAgeHours = 0;
   for (const task of tasks) {
+    const ageHours = Math.max(
+      0,
+      (now.getTime() - task.createdAt.getTime()) / 3_600_000,
+    );
+    ageHoursTotal += ageHours;
+    oldestTaskAgeHours = Math.max(oldestTaskAgeHours, ageHours);
     statusCounts[task.status] = (statusCounts[task.status] ?? 0) + 1;
     const priority = task.priority ?? "no-priority";
     priorityCounts[priority] = (priorityCounts[priority] ?? 0) + 1;
@@ -847,12 +1031,19 @@ export async function analytics(workspaceId: string, input: unknown) {
       byPriority: priorityCounts,
     },
     projects: { byHealth: projectHealthCounts },
+    elapsed: {
+      averageTaskAgeHours:
+        tasks.length === 0 ? 0 : ageHoursTotal / tasks.length,
+      oldestTaskAgeHours,
+    },
     definitions: {
       total: "tasks created in the selected window",
       overdue: "tasks with dueDate before the request time",
       byStatus: "task.status grouped exactly as stored",
       byPriority: "task.priority grouped exactly as stored",
       projectHealth: "project health repeated per matching task",
+      averageTaskAgeHours: "mean hours since task.createdAt",
+      oldestTaskAgeHours: "maximum hours since task.createdAt",
     },
   };
 }
@@ -992,6 +1183,67 @@ export async function listIntegrations(workspaceId: string, limit?: number) {
     .where(eq(schema.operatorIntegrationTable.workspaceId, workspaceId))
     .orderBy(asc(schema.operatorIntegrationTable.createdAt))
     .limit(boundedLimit(limit));
+}
+
+export function parseIntegrationEventInput(input: unknown) {
+  const body = asObject(input);
+  const externalId = stringField(body, "externalId", { max: 240 }) as string;
+  const payload =
+    body.payload === undefined ? {} : asObject(body.payload, "payload");
+  const cursor = stringField(body, "cursor", {
+    optional: true,
+    nullable: true,
+    max: 500,
+  });
+  return { externalId, payload, cursor: cursor ?? null };
+}
+
+export async function ingestIntegrationEvent(
+  workspaceId: string,
+  integrationId: string,
+  replayOwnerUserId: string,
+  input: unknown,
+) {
+  const integration = await assertIntegration(workspaceId, integrationId);
+  if (integration.status !== "ready") {
+    conflict("Integration must be ready before receiving events");
+  }
+  const parsed = parseIntegrationEventInput(input);
+  const idempotencyKey = `integration:${integrationId}:${parsed.externalId}`;
+  const [existing] = await db
+    .select({ id: schema.operatorOutboxTable.id })
+    .from(schema.operatorOutboxTable)
+    .where(
+      and(
+        eq(schema.operatorOutboxTable.workspaceId, workspaceId),
+        eq(schema.operatorOutboxTable.idempotencyKey, idempotencyKey),
+      ),
+    )
+    .limit(1);
+  const event = await enqueueOperatorEvent(
+    workspaceId,
+    {
+      eventType: `integration.${integration.kind}.received`,
+      aggregateType: "integration",
+      aggregateId: integration.id,
+      idempotencyKey,
+      payload: { ...parsed.payload, externalId: parsed.externalId },
+    },
+    replayOwnerUserId,
+  );
+  if (parsed.cursor !== null) {
+    await db
+      .update(schema.operatorIntegrationTable)
+      .set({ cursor: parsed.cursor, updatedAt: new Date() })
+      .where(eq(schema.operatorIntegrationTable.id, integration.id));
+  }
+  return {
+    integrationId: integration.id,
+    externalId: parsed.externalId,
+    eventId: event.id,
+    deduplicated: Boolean(existing),
+    cursor: parsed.cursor ?? integration.cursor,
+  };
 }
 
 export async function updateIntegrationCursor(

@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  matchesTriageConditions,
   parseAttemptInput,
   parseCycleInput,
+  parseIntegrationEventInput,
   parseIntegrationInput,
   parseOutboxInput,
   parseProjectOperatorInput,
   parseTriageAction,
+  parseTriageConditions,
   parseTriageRuleInput,
 } from "../../../apps/api/src/operator/service";
 
@@ -33,6 +36,22 @@ describe("operator slice contracts", () => {
     expect(() => parseTriageAction({ type: "unknown", value: "x" })).toThrow(
       /type/,
     );
+    expect(parseTriageConditions({ priority: ["urgent"] })).toEqual({
+      priority: ["urgent"],
+    });
+    expect(
+      matchesTriageConditions(
+        {
+          status: "to-do",
+          priority: "urgent",
+          projectId: "p1",
+          userId: null,
+          title: "Deploy Kaneo",
+          labelIds: [],
+        },
+        { priority: ["urgent"], titleIncludes: "kaneo" },
+      ),
+    ).toBe(true);
     expect(() =>
       parseTriageRuleInput({
         name: "Route urgent",
@@ -53,6 +72,14 @@ describe("operator slice contracts", () => {
       }).idempotencyKey,
     ).toBe("proposal:p1");
     expect(
+      parseOutboxInput({
+        eventType: "x",
+        aggregateType: "y",
+        aggregateId: "z",
+        idempotencyKey: "bounded",
+      }).maxAttempts,
+    ).toBe(3);
+    expect(
       parseAttemptInput({ status: "failed", error: "timeout" }).status,
     ).toBe("failed");
     expect(() =>
@@ -64,6 +91,16 @@ describe("operator slice contracts", () => {
         payload: "secret",
       }),
     ).toThrow(/payload/);
+  });
+
+  it("normalizes one-way integration events", () => {
+    expect(
+      parseIntegrationEventInput({
+        externalId: "evt-1",
+        payload: { title: "New" },
+        cursor: "2",
+      }),
+    ).toEqual({ externalId: "evt-1", payload: { title: "New" }, cursor: "2" });
   });
 
   it("rejects credentials at the one-way integration boundary", () => {
@@ -91,6 +128,13 @@ describe("operator slice contracts", () => {
         endsAt: "2026-09-08T00:00:00.000Z",
       }),
     ).not.toThrow();
+    expect(
+      parseCycleInput({
+        name: "Cycle 1",
+        startsAt: "2026-09-01T00:00:00.000Z",
+        endsAt: "2026-09-08T00:00:00.000Z",
+      }).rolloverPolicy,
+    ).toBe("manual");
     expect(() =>
       parseCycleInput({
         name: "Cycle 1",
