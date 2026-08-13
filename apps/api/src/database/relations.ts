@@ -13,6 +13,7 @@ import {
   labelTable,
   notificationTable,
   projectTable,
+  savedViewTable,
   sessionTable,
   taskRelationTable,
   taskReminderSentTable,
@@ -38,6 +39,7 @@ export const userTableRelations = relations(userTable, ({ many, one }) => ({
   workspaces: many(workspaceTable),
   workspaceMemberships: many(workspaceUserTable),
   assignedTasks: many(taskTable),
+  savedViews: many(savedViewTable),
   timeEntries: many(timeEntryTable),
   activities: many(activityTable),
   comments: many(commentTable),
@@ -74,6 +76,7 @@ export const workspaceTableRelations = relations(
     teams: many(teamTable),
     members: many(workspaceUserTable),
     projects: many(projectTable),
+    savedViews: many(savedViewTable),
     assets: many(assetTable),
     invitations: many(invitationTable),
     notificationWorkspaceRules: many(userNotificationWorkspaceRuleTable),
@@ -110,6 +113,17 @@ export const projectTableRelations = relations(
     notificationWorkspaceProjects: many(userNotificationWorkspaceProjectTable),
   }),
 );
+
+export const savedViewTableRelations = relations(savedViewTable, ({ one }) => ({
+  workspace: one(workspaceTable, {
+    fields: [savedViewTable.workspaceId],
+    references: [workspaceTable.id],
+  }),
+  owner: one(userTable, {
+    fields: [savedViewTable.ownerUserId],
+    references: [userTable.id],
+  }),
+}));
 
 export const columnTableRelations = relations(columnTable, ({ one, many }) => ({
   project: one(projectTable, {

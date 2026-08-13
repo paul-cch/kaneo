@@ -1,5 +1,5 @@
 import { windowId } from "@kaneo/libs";
-import { useQueryClient } from "@tanstack/react-query";
+import { type QueryKey, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { getApiUrl } from "@/fetchers/get-api-url";
 import { authClient } from "@/lib/auth-client";
@@ -17,7 +17,10 @@ const BASE_DELAY = 1000; // 1 second
 // We send a lightweight ping every 30 seconds to keep the connection alive.
 const WS_PING_INTERVAL_MS = 30_000;
 
-export function useProjectWebSocket(projectId: string) {
+export function useProjectWebSocket(
+  projectId: string,
+  invalidateQueryKey?: QueryKey,
+) {
   const queryClient = useQueryClient();
   const { data: session } = authClient.useSession();
   const wsRef = useRef<WebSocket | null>(null);
@@ -68,6 +71,9 @@ export function useProjectWebSocket(projectId: string) {
             queryClient.invalidateQueries({
               queryKey: ["tasks", message.projectId],
             });
+            if (invalidateQueryKey) {
+              queryClient.invalidateQueries({ queryKey: invalidateQueryKey });
+            }
 
             if (message.type === "TASK_RELATION_UPDATED") {
               if (message.sourceTaskId) {
@@ -138,5 +144,5 @@ export function useProjectWebSocket(projectId: string) {
       }
       wsRef.current?.close();
     };
-  }, [projectId, session?.user?.id, queryClient]);
+  }, [projectId, session?.user?.id, queryClient, invalidateQueryKey]);
 }

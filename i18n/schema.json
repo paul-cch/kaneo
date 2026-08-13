@@ -7863,6 +7863,218 @@
 						"suggestionCompleted"
 					]
 				},
+				"focus": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"pageTitle": {
+							"type": "string"
+						},
+						"loading": {
+							"type": "string"
+						},
+						"loadError": {
+							"type": "string"
+						},
+						"authorizationError": {
+							"type": "string"
+						},
+						"invalidFilterError": {
+							"type": "string"
+						},
+						"staleUpdateError": {
+							"type": "string"
+						},
+						"retry": {
+							"type": "string"
+						},
+						"empty": {
+							"type": "string"
+						},
+						"task": {
+							"type": "string"
+						},
+						"project": {
+							"type": "string"
+						},
+						"status": {
+							"type": "string"
+						},
+						"priority": {
+							"type": "string"
+						},
+						"due": {
+							"type": "string"
+						},
+						"noDueDate": {
+							"type": "string"
+						},
+						"newView": {
+							"type": "string"
+						},
+						"createDescription": {
+							"type": "string"
+						},
+						"name": {
+							"type": "string"
+						},
+						"namePlaceholder": {
+							"type": "string"
+						},
+						"projects": {
+							"type": "string"
+						},
+						"projectTaskCount": {
+							"type": "string"
+						},
+						"noProjects": {
+							"type": "string"
+						},
+						"textFilter": {
+							"type": "string"
+						},
+						"textPlaceholder": {
+							"type": "string"
+						},
+						"cancel": {
+							"type": "string"
+						},
+						"createButton": {
+							"type": "string"
+						},
+						"created": {
+							"type": "string"
+						},
+						"createError": {
+							"type": "string"
+						},
+						"open": {
+							"type": "string"
+						},
+						"assignee": {
+							"type": "string"
+						},
+						"unassigned": {
+							"type": "string"
+						},
+						"noViews": {
+							"type": "string"
+						},
+						"state": {
+							"type": "string"
+						},
+						"stateActive": {
+							"type": "string"
+						},
+						"stateFinal": {
+							"type": "string"
+						},
+						"stateAny": {
+							"type": "string"
+						},
+						"priorities": {
+							"type": "string"
+						},
+						"assignees": {
+							"type": "string"
+						},
+						"labels": {
+							"type": "string"
+						},
+						"noMembers": {
+							"type": "string"
+						},
+						"noLabels": {
+							"type": "string"
+						},
+						"dueAny": {
+							"type": "string"
+						},
+						"dueOverdue": {
+							"type": "string"
+						},
+						"dueToday": {
+							"type": "string"
+						},
+						"dueNext7Days": {
+							"type": "string"
+						},
+						"dueNext30Days": {
+							"type": "string"
+						},
+						"dueNoDate": {
+							"type": "string"
+						},
+						"preview": {
+							"type": "string"
+						},
+						"previewLoading": {
+							"type": "string"
+						},
+						"previewError": {
+							"type": "string"
+						},
+						"previewEmpty": {
+							"type": "string"
+						},
+						"previewCount": {
+							"type": "string"
+						}
+					},
+					"required": [
+						"pageTitle",
+						"loading",
+						"loadError",
+						"authorizationError",
+						"invalidFilterError",
+						"staleUpdateError",
+						"retry",
+						"empty",
+						"task",
+						"project",
+						"status",
+						"priority",
+						"due",
+						"noDueDate",
+						"newView",
+						"createDescription",
+						"name",
+						"namePlaceholder",
+						"projects",
+						"projectTaskCount",
+						"noProjects",
+						"textFilter",
+						"textPlaceholder",
+						"cancel",
+						"createButton",
+						"created",
+						"createError",
+						"open",
+						"assignee",
+						"unassigned",
+						"noViews",
+						"state",
+						"stateActive",
+						"stateFinal",
+						"stateAny",
+						"priorities",
+						"assignees",
+						"labels",
+						"noMembers",
+						"noLabels",
+						"dueAny",
+						"dueOverdue",
+						"dueToday",
+						"dueNext7Days",
+						"dueNext30Days",
+						"dueNoDate",
+						"preview",
+						"previewLoading",
+						"previewError",
+						"previewEmpty",
+						"previewCount"
+					]
+				},
 				"create": {
 					"type": "object",
 					"additionalProperties": false,
@@ -7920,7 +8132,7 @@
 					]
 				}
 			},
-			"required": ["projects", "search", "create"]
+			"required": ["projects", "search", "focus", "create"]
 		},
 		"team": {
 			"type": "object",

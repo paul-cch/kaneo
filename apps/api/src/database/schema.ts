@@ -286,6 +286,12 @@ export const projectTable = pgTable(
     icon: text("icon").default("Layout"),
     name: text("name").notNull(),
     description: text("description"),
+    leadUserId: text("lead_user_id").references(() => userTable.id, {
+      onDelete: "set null",
+    }),
+    targetDate: timestamp("target_date", { mode: "date" }),
+    status: text("status").notNull().default("active"),
+    health: text("health").notNull().default("on-track"),
     createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
     isPublic: boolean("is_public").default(false),
     archivedAt: timestamp("archived_at", { mode: "date" }),
@@ -301,6 +307,44 @@ export const projectTable = pgTable(
   ],
 );
 
+export const savedViewTable = pgTable(
+  "saved_view",
+  {
+    id: text("id")
+      .$defaultFn(() => createId())
+      .primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaceTable.id, { onDelete: "cascade" }),
+    ownerUserId: text("owner_user_id")
+      .notNull()
+      .references(() => userTable.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    schemaVersion: integer("schema_version").notNull().default(1),
+    filters: jsonb("filters").notNull(),
+    sort: jsonb("sort").notNull(),
+    pinnedPosition: integer("pinned_position"),
+    createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { mode: "date" })
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull(),
+  },
+  (table) => [
+    index("saved_view_workspace_owner_idx").on(
+      table.workspaceId,
+      table.ownerUserId,
+    ),
+    uniqueIndex("saved_view_workspace_owner_name_idx").on(
+      table.workspaceId,
+      table.ownerUserId,
+      sql`lower(${table.name})`,
+    ),
+    uniqueIndex("saved_view_pinned_position_idx")
+      .on(table.workspaceId, table.ownerUserId, table.pinnedPosition)
+      .where(sql`${table.pinnedPosition} is not null`),
+  ],
+);
 export const columnTable = pgTable(
   "column",
   {
@@ -399,6 +443,10 @@ export const taskTable = pgTable(
     index("task_dueDate_idx").on(table.dueDate),
     index("task_assigneeId_idx").on(table.userId),
     index("task_columnId_idx").on(table.columnId),
+    index("task_focus_text_search_idx").using(
+      "gin",
+      sql`to_tsvector('simple', coalesce(${table.title}, '') || ' ' || coalesce(${table.description}, ''))`,
+    ),
     unique("task_project_number_unique").on(table.projectId, table.number),
   ],
 );
@@ -1001,6 +1049,330 @@ export const mcpOauthStateTable = pgTable(
   ],
 );
 
+export const projectStatusUpdateTable = pgTable(
+  "project_status_update",
+  {
+    id: text("id")
+      .$defaultFn(() => createId())
+      .primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaceTable.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projectTable.id, { onDelete: "cascade" }),
+    authorUserId: text("author_user_id")
+      .notNull()
+      .references(() => userTable.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("project_status_update_workspace_idx").on(table.workspaceId),
+    index("project_status_update_project_idx").on(
+      table.projectId,
+      table.createdAt,
+    ),
+  ],
+);
+
+export const cycleTable = pgTable(
+  "cycle",
+  {
+    id: text("id")
+      .$defaultFn(() => createId())
+      .primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaceTable.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    startsAt: timestamp("starts_at", { mode: "date" }).notNull(),
+    endsAt: timestamp("ends_at", { mode: "date" }).notNull(),
+    status: text("status").notNull().default("planned"),
+    rolloverPolicy: text("rollover_policy").notNull().default("manual"),
+    createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { mode: "date" })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    index("cycle_workspace_idx").on(table.workspaceId),
+    index("cycle_workspace_dates_idx").on(
+      table.workspaceId,
+      table.startsAt,
+      table.endsAt,
+    ),
+  ],
+);
+
+export const cycleTaskTable = pgTable(
+  "cycle_task",
+  {
+    id: text("id")
+      .$defaultFn(() => createId())
+      .primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaceTable.id, { onDelete: "cascade" }),
+    cycleId: text("cycle_id")
+      .notNull()
+      .references(() => cycleTable.id, { onDelete: "cascade" }),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => taskTable.id, { onDelete: "cascade" }),
+    addedAt: timestamp("added_at", { mode: "date" }).defaultNow().notNull(),
+  },
+  (table) => [
+    unique("cycle_task_cycle_task_unique").on(table.cycleId, table.taskId),
+    index("cycle_task_workspace_idx").on(table.workspaceId),
+    index("cycle_task_task_idx").on(table.taskId),
+  ],
+);
+
+export const operatorOutboxTable = pgTable(
+  "operator_outbox",
+  {
+    id: text("id")
+      .$defaultFn(() => createId())
+      .primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaceTable.id, { onDelete: "cascade" }),
+    eventType: text("event_type").notNull(),
+    aggregateType: text("aggregate_type").notNull(),
+    aggregateId: text("aggregate_id").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    payload: jsonb("payload").notNull(),
+    status: text("status").notNull().default("pending"),
+    maxAttempts: integer("max_attempts").notNull().default(3),
+    replayOwnerUserId: text("replay_owner_user_id").references(
+      () => userTable.id,
+      {
+        onDelete: "set null",
+      },
+    ),
+    availableAt: timestamp("available_at", { mode: "date" })
+      .defaultNow()
+      .notNull(),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { mode: "date" })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    unique("operator_outbox_workspace_idempotency_unique").on(
+      table.workspaceId,
+      table.idempotencyKey,
+    ),
+    index("operator_outbox_status_idx").on(
+      table.workspaceId,
+      table.status,
+      table.availableAt,
+    ),
+  ],
+);
+
+export const operatorJobAttemptTable = pgTable(
+  "operator_job_attempt",
+  {
+    id: text("id")
+      .$defaultFn(() => createId())
+      .primaryKey(),
+    outboxId: text("outbox_id")
+      .notNull()
+      .references(() => operatorOutboxTable.id, { onDelete: "cascade" }),
+    attempt: integer("attempt").notNull(),
+    status: text("status").notNull(),
+    startedAt: timestamp("started_at", { mode: "date" }).defaultNow().notNull(),
+    finishedAt: timestamp("finished_at", { mode: "date" }),
+    error: text("error"),
+  },
+  (table) => [
+    unique("operator_job_attempt_outbox_attempt_unique").on(
+      table.outboxId,
+      table.attempt,
+    ),
+    index("operator_job_attempt_outbox_idx").on(table.outboxId),
+  ],
+);
+
+export const triageRuleTable = pgTable(
+  "triage_rule",
+  {
+    id: text("id")
+      .$defaultFn(() => createId())
+      .primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaceTable.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    priority: integer("priority").notNull().default(0),
+    enabled: boolean("enabled").notNull().default(true),
+    conditions: jsonb("conditions").notNull(),
+    action: jsonb("action").notNull(),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => userTable.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { mode: "date" })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    index("triage_rule_workspace_idx").on(
+      table.workspaceId,
+      table.enabled,
+      table.priority,
+    ),
+  ],
+);
+
+export const triageItemTable = pgTable(
+  "triage_item",
+  {
+    id: text("id")
+      .$defaultFn(() => createId())
+      .primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaceTable.id, { onDelete: "cascade" }),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => taskTable.id, { onDelete: "cascade" }),
+    ruleId: text("rule_id").references(() => triageRuleTable.id, {
+      onDelete: "set null",
+    }),
+    source: text("source").notNull().default("native"),
+    status: text("status").notNull().default("pending"),
+    proposedAction: jsonb("proposed_action").notNull(),
+    appliedAt: timestamp("applied_at", { mode: "date" }),
+    createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { mode: "date" })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    index("triage_item_workspace_status_idx").on(
+      table.workspaceId,
+      table.status,
+      table.createdAt,
+    ),
+    index("triage_item_task_idx").on(table.taskId),
+  ],
+);
+
+export const operatorProposalTable = pgTable(
+  "operator_proposal",
+  {
+    id: text("id")
+      .$defaultFn(() => createId())
+      .primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaceTable.id, { onDelete: "cascade" }),
+    source: text("source").notNull(),
+    ownerUserId: text("owner_user_id")
+      .notNull()
+      .references(() => userTable.id, { onDelete: "cascade" }),
+    dedupeKey: text("dedupe_key").notNull(),
+    evidence: jsonb("evidence").notNull(),
+    requestedAction: jsonb("requested_action").notNull(),
+    status: text("status").notNull().default("proposed"),
+    reviewedBy: text("reviewed_by").references(() => userTable.id, {
+      onDelete: "set null",
+    }),
+    reviewNote: text("review_note"),
+    createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { mode: "date" })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    unique("operator_proposal_workspace_dedupe_unique").on(
+      table.workspaceId,
+      table.dedupeKey,
+    ),
+    index("operator_proposal_workspace_status_idx").on(
+      table.workspaceId,
+      table.status,
+      table.createdAt,
+    ),
+  ],
+);
+
+export const operatorIntegrationTable = pgTable(
+  "operator_integration",
+  {
+    id: text("id")
+      .$defaultFn(() => createId())
+      .primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaceTable.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    displayName: text("display_name").notNull(),
+    status: text("status").notNull().default("disabled"),
+    config: jsonb("config").notNull(),
+    cursor: text("cursor"),
+    createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { mode: "date" })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    unique("operator_integration_workspace_kind_unique").on(
+      table.workspaceId,
+      table.kind,
+    ),
+    index("operator_integration_workspace_status_idx").on(
+      table.workspaceId,
+      table.status,
+    ),
+  ],
+);
+
+export const operatorIdentityMapTable = pgTable(
+  "operator_identity_map",
+  {
+    id: text("id")
+      .$defaultFn(() => createId())
+      .primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaceTable.id, { onDelete: "cascade" }),
+    integrationId: text("integration_id")
+      .notNull()
+      .references(() => operatorIntegrationTable.id, { onDelete: "cascade" }),
+    localUserId: text("local_user_id")
+      .notNull()
+      .references(() => userTable.id, { onDelete: "cascade" }),
+    externalIdentity: text("external_identity").notNull(),
+    metadata: jsonb("metadata").notNull(),
+    createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { mode: "date" })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    unique("operator_identity_map_integration_external_unique").on(
+      table.integrationId,
+      table.externalIdentity,
+    ),
+    unique("operator_identity_map_integration_local_unique").on(
+      table.integrationId,
+      table.localUserId,
+    ),
+    index("operator_identity_map_workspace_idx").on(table.workspaceId),
+  ],
+);
 // Auth-schema compatible aliases in schema.ts
 export const user = userTable;
 export const session = sessionTable;

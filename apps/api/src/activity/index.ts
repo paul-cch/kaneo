@@ -287,4 +287,25 @@ subscribeToEvent<{
   });
 });
 
+subscribeToEvent<{
+  taskId: string;
+  userId: string;
+  label?: { id: string; name: string; color: string };
+  type: string;
+}>("task.label_assigned", async (data) => {
+  await createActivity(
+    data.taskId,
+    data.type,
+    data.userId,
+    null,
+    data.label
+      ? {
+          labelId: data.label.id,
+          labelName: data.label.name,
+          labelColor: data.label.color,
+        }
+      : {},
+  );
+});
+
 export default activity;

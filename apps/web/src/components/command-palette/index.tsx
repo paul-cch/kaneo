@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/command";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { shortcuts } from "@/constants/shortcuts";
+import useGetSavedViews from "@/hooks/queries/saved-view/use-get-saved-views";
 import useActiveWorkspace from "@/hooks/queries/workspace/use-active-workspace";
 import { useRegisterShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useUserPreferencesStore } from "@/store/user-preferences";
@@ -47,6 +48,7 @@ function CommandPalette() {
   const navigate = useNavigate();
   const location = useLocation();
   const { data: workspace } = useActiveWorkspace();
+  const { data: savedViews } = useGetSavedViews(workspace?.id ?? "");
   const [open, setOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false);
@@ -114,6 +116,26 @@ function CommandPalette() {
               });
             },
           },
+          {
+            value: "focus",
+            label: t("workspace:focus.pageTitle"),
+            onRun: () => {
+              const view = savedViews?.[0];
+              if (!workspace?.id) return;
+              if (!view?.id) {
+                navigate({
+                  to: "/dashboard/workspace/$workspaceId",
+                  params: { workspaceId: workspace.id },
+                });
+                return;
+              }
+              navigate({
+                to: "/dashboard/workspace/$workspaceId/focus/$viewId",
+                params: { workspaceId: workspace.id, viewId: view.id },
+              });
+            },
+          },
+
           {
             value: "search",
             label: t("navigation:commandPalette.search"),
@@ -183,7 +205,7 @@ function CommandPalette() {
         ],
       },
     ],
-    [navigate, setTheme, t, workspace?.id],
+    [navigate, savedViews, setTheme, t, workspace?.id],
   );
 
   const shortcutHandlers = useMemo(() => {
