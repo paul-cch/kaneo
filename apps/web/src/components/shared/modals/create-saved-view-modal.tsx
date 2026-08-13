@@ -48,6 +48,11 @@ function CreateSavedViewModal({
     "overdue" | "today" | "next-7-days" | "next-30-days" | "no-due-date" | "any"
   >("any");
 
+  const templateLabels = useMemo(
+    () => workspaceLabels.filter((label) => label.taskId === null),
+    [workspaceLabels],
+  );
+
   const previewInput = useMemo(
     () => ({
       filters: {
@@ -332,7 +337,7 @@ function CreateSavedViewModal({
               {t("workspace:focus.labels")}
             </legend>
             <div className="grid max-h-28 gap-2 overflow-y-auto sm:grid-cols-2">
-              {workspaceLabels.map((label) => (
+              {templateLabels.map((label) => (
                 <label
                   key={label.id}
                   className="flex items-center gap-2 text-sm text-muted-foreground"
@@ -345,7 +350,7 @@ function CreateSavedViewModal({
                   {label.name}
                 </label>
               ))}
-              {workspaceLabels.length === 0 && (
+              {templateLabels.length === 0 && (
                 <p className="text-sm text-muted-foreground">
                   {t("workspace:focus.noLabels")}
                 </p>
