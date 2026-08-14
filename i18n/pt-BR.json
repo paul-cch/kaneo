@@ -1797,7 +1797,7 @@
 		"gantt": {
 			"pageTitle": "{{name}} – Gantt",
 			"title": "Linha do tempo Gantt",
-			"searchPlaceholder": "Buscar tickets agendados...",
+			"searchPlaceholder": "Buscar tarefas agendadas...",
 			"hideTasks": "Ocultar tarefas",
 			"showTasks": "Mostrar tarefas",
 			"noTasks": "Nenhuma tarefa agendada",

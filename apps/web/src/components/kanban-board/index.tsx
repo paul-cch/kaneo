@@ -247,12 +247,12 @@ function KanbanBoard({ project, disableDragDrop = false }: KanbanBoardProps) {
     >
       <div className="flex h-full w-full flex-col bg-linear-to-b from-muted/20 to-background">
         <div className="min-h-0 flex-1 overflow-x-auto [-webkit-overflow-scrolling:touch]">
-          <div className="flex h-full min-w-max gap-4 px-4 py-4 md:px-5">
+          {/* min-w-full rather than min-w-max: the row fills the viewport and
+              columns share it, so a board that fits is not scrolled. Columns
+              may shrink to min-w-64 before the row overflows and scrolls. */}
+          <div className="flex h-full min-w-full gap-4 px-4 py-4 md:px-5">
             {project.columns?.map((column) => (
-              <div
-                key={column.id}
-                className="h-full max-w-96 min-w-80 shrink-0 flex-1"
-              >
+              <div key={column.id} className="h-full max-w-96 min-w-64 flex-1">
                 <Column column={column} disableDragDrop={disableDragDrop} />
               </div>
             ))}

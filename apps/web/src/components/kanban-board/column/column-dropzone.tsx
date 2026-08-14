@@ -5,6 +5,7 @@ import {
 } from "@dnd-kit/sortable";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import type { ProjectWithTasks } from "@/types/project";
 import TaskCard from "../task-card";
 
@@ -31,6 +32,7 @@ export function ColumnDropzone({
     onIsOverChange?.(isOver);
   }, [isOver, onIsOverChange]);
 
+  const { t } = useTranslation();
   const reduceMotion = useReducedMotion();
 
   return (
@@ -40,6 +42,14 @@ export function ColumnDropzone({
         strategy={verticalListSortingStrategy}
       >
         <div className="flex flex-col gap-2">
+          {/* An empty column rendered nothing at all, so it read as a dead
+              rectangle with no indication it could receive a card. Reuses an
+              existing translated string rather than adding one. */}
+          {column.tasks.length === 0 && (
+            <div className="flex min-h-24 items-center justify-center rounded-lg border border-dashed border-border/60 px-3 py-6 text-[11px] text-muted-foreground">
+              {t("tasks:listView.noTasks")}
+            </div>
+          )}
           <AnimatePresence initial={false} mode="popLayout">
             {column.tasks.map((task) => (
               <motion.div

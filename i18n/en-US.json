@@ -1805,7 +1805,7 @@
 		"gantt": {
 			"pageTitle": "{{name}} – Gantt",
 			"title": "Gantt Timeline",
-			"searchPlaceholder": "Search scheduled tickets...",
+			"searchPlaceholder": "Search scheduled tasks...",
 			"hideTasks": "Hide tasks",
 			"showTasks": "Show tasks",
 			"noTasks": "No scheduled tasks",

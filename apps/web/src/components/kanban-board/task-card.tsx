@@ -210,32 +210,26 @@ function TaskCard({ task, disableDragDrop = false }: TaskCardProps) {
               </div>
             )}
 
-            {showAssignees && (
+            {/* Unassigned renders nothing rather than a "?" chip. Most cards on
+                a single-operator board are unassigned, so the placeholder
+                repeated down a column was noise that read as a help affordance. */}
+            {showAssignees && task.userId && (
               <div className="absolute top-3 right-3">
-                {task.userId ? (
-                  <Avatar className="h-5 w-5">
-                    <AvatarImage
-                      src={assignee?.user?.image ?? ""}
-                      alt={assignee?.user?.name || ""}
-                    />
-                    <AvatarFallback className="text-xs font-medium border border-border/30">
-                      {getInitials(assignee?.user?.name)}
-                    </AvatarFallback>
-                  </Avatar>
-                ) : (
-                  <div
-                    className="flex h-5 w-5 items-center justify-center rounded-full border border-border bg-muted"
-                    title={t("tasks:assignee.unassigned")}
-                  >
-                    <span className="text-[10px] font-medium text-muted-foreground">
-                      ?
-                    </span>
-                  </div>
-                )}
+                <Avatar className="h-5 w-5">
+                  <AvatarImage
+                    src={assignee?.user?.image ?? ""}
+                    alt={assignee?.user?.name || ""}
+                  />
+                  <AvatarFallback className="text-xs font-medium border border-border/30">
+                    {getInitials(assignee?.user?.name)}
+                  </AvatarFallback>
+                </Avatar>
               </div>
             )}
 
-            <div className="mb-2.5 pr-6">
+            <div
+              className={`mb-2.5 ${showAssignees && task.userId ? "pr-6" : ""}`}
+            >
               <div
                 className="overflow-hidden break-words text-sm leading-5 font-medium text-foreground/95"
                 style={{
@@ -257,11 +251,19 @@ function TaskCard({ task, disableDragDrop = false }: TaskCardProps) {
             )}
 
             <div className="flex items-center gap-1.5">
-              {showPriority && (
-                <span className="inline-flex items-center gap-1 rounded border border-border/70 bg-muted/55 px-2 py-1 text-[10px] font-medium text-muted-foreground">
-                  {getPriorityIcon(task.priority ?? "")}
-                </span>
-              )}
+              {/* The icon alone was not scannable: three chevron variants and a
+                  dot with no legend. The label text already exists in every
+                  locale, so naming the priority costs no new strings. Cards with
+                  no priority set drop the chip entirely instead of showing
+                  "No priority" on every card. */}
+              {showPriority &&
+                task.priority &&
+                task.priority !== "no-priority" && (
+                  <span className="inline-flex items-center gap-1 rounded border border-border/70 bg-muted/55 px-2 py-1 text-[10px] font-medium text-muted-foreground">
+                    {getPriorityIcon(task.priority)}
+                    {t(`tasks:priority.${task.priority}`)}
+                  </span>
+                )}
 
               {showDueDates && task.dueDate && (
                 <div
