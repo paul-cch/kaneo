@@ -1797,7 +1797,7 @@
 		"gantt": {
 			"pageTitle": "{{name}} – Gantt",
 			"title": "Cronologia Gantt",
-			"searchPlaceholder": "Cerca ticket programmati...",
+			"searchPlaceholder": "Cerca attività programmate...",
 			"hideTasks": "Nascondi attività",
 			"showTasks": "Mostra attività",
 			"noTasks": "Nessuna attività programmata",

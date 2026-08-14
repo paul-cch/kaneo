@@ -1805,7 +1805,7 @@
 		"gantt": {
 			"pageTitle": "{{name}} – Gantt",
 			"title": "Gantt-Zeitachse",
-			"searchPlaceholder": "Geplante Tickets suchen...",
+			"searchPlaceholder": "Geplante Aufgaben suchen...",
 			"hideTasks": "Aufgaben ausblenden",
 			"showTasks": "Aufgaben anzeigen",
 			"noTasks": "Keine geplanten Aufgaben",

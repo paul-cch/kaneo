@@ -1794,7 +1794,7 @@
 		"gantt": {
 			"pageTitle": "{{name}} – Gantt",
 			"title": "Gantt-tijdlijn",
-			"searchPlaceholder": "Zoek geplande tickets...",
+			"searchPlaceholder": "Zoek geplande taken...",
 			"hideTasks": "Taken verbergen",
 			"showTasks": "Taken tonen",
 			"noTasks": "Geen geplande taken",

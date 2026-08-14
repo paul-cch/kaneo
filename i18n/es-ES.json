@@ -1794,7 +1794,7 @@
 		"gantt": {
 			"pageTitle": "{{name}} – Gantt",
 			"title": "Diagrama de Gantt",
-			"searchPlaceholder": "Buscar tickets planificados...",
+			"searchPlaceholder": "Buscar tareas planificadas...",
 			"hideTasks": "Esconder tareas",
 			"showTasks": "Mostrar tareas",
 			"noTasks": "No hay tareas planificadas",
